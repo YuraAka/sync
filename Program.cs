@@ -4,10 +4,251 @@ using System.Collections.Generic;
 using System.Threading;
 using WinSCP;
 
+/// TODO
+/// event monitor vs event transmitter
+/// exceptions are cheap?
+/// lock on ref object
+/// exception handling
+/// event log
+/// user params from registry
+/// detect and run batch load
+/// gui
+///
 namespace sync
 {
     using EventPool = List<FileSystemEventArgs>;
     using Timer = System.Timers.Timer;
+    using Changes = WatcherChangeTypes;
+
+    class Utils {
+        public static bool IsDirectory(string path)
+        {
+            var attrs = TryAttrs(path);
+            return attrs.HasValue
+                && (attrs.Value & FileAttributes.Directory) == FileAttributes.Directory;
+        }
+
+        private static FileAttributes? TryAttrs(string path) {
+            try
+            {
+                return File.GetAttributes(path);
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return null;
+            }
+            catch (FileNotFoundException)
+            {
+                return null;
+            }
+        }
+    }
+
+    class Logger {
+        public void Debug(string format, params object[] arg) {
+            Console.WriteLine(format, arg);
+        }
+
+        public void Info(string format, params object[] arg)
+        {
+            Console.WriteLine(format, arg);
+        }
+    };
+
+    class EventMonitor {
+        private EventPool Events = new EventPool();
+        private Timer Quantifier;
+        private FileSystemWatcher FileMonitor;
+        private Logger Log;
+        private string Path;
+
+        public EventMonitor(string path, Logger log) {
+            Path = path;
+            Log = log;
+            Quantifier = new Timer() {
+                AutoReset = false,
+                Interval = 100
+            };
+
+            Quantifier.Elapsed += Flush;
+
+            FileMonitor = new FileSystemWatcher
+            {
+                Path = path,
+                IncludeSubdirectories = true,
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.DirectoryName,
+                InternalBufferSize = 64 * 1024
+            };
+
+            FileMonitor.Changed += new FileSystemEventHandler(OnChanged);
+            FileMonitor.Created += new FileSystemEventHandler(OnChanged);
+            FileMonitor.Deleted += new FileSystemEventHandler(OnChanged);
+            FileMonitor.Renamed += new RenamedEventHandler(OnChanged);
+            FileMonitor.EnableRaisingEvents = true;
+            Log.Info("Ready to monitor filesystem.");
+        }
+
+        public EventPool Wait() {
+            EventPool result;
+            lock (Events) {
+                if (Events.Count == 0)
+                {
+                    Log.Info("Waiting for changes...");
+                    Monitor.Wait(Events);
+                }
+
+                result = Events;
+                Events = new EventPool();
+            }
+
+            return result;
+        }
+
+        private void Flush(Object source, System.Timers.ElapsedEventArgs ev) {
+            Log.Debug("Timer signals");
+            lock (Events)
+            {
+                if (Events.Count > 0)
+                {
+                    Monitor.Pulse(Events);
+                }
+            }
+        }
+
+        private void OnChanged(object source, FileSystemEventArgs ev) {
+            Log.Debug("IN: Timer reset: {0}, {1}", ev.ChangeType, ev.FullPath);
+            Quantifier.Enabled = false;
+            Quantifier.Enabled = true;
+
+            if (TrySkip(ev)) {
+                return;
+            }
+
+            ev = Transform(ev);
+            lock (Events) {
+                Events.Add(ev);
+                if (TryCommitNew(ev)) {
+                    return;
+                }
+
+                if (!TryReduce(ev)) {
+                    Log.Debug("IN: Added, no rule applied: {0}", ev.FullPath);
+                    LogEventsNoLock();
+                }
+            }
+        }
+
+        private FileSystemEventArgs Transform(FileSystemEventArgs ev) {
+            if (ev.ChangeType == Changes.Renamed)
+            {
+                RenamedEventArgs re = (RenamedEventArgs)ev;
+                if (re.OldFullPath.Contains("~"))
+                {
+                    ev = new FileSystemEventArgs(Changes.Changed, Path, re.Name);
+                    Log.Debug("IN: Refactor rename to update: {0}", ev.FullPath);
+                }
+            }
+
+            return ev;
+        }
+
+        private bool TrySkip(FileSystemEventArgs ev) {
+            if (ev.FullPath.Contains("~"))
+            {
+                Log.Debug("IN: Skip tilda: {0}", ev.FullPath);
+                return true;
+            }
+
+            /// todo regexp
+            if (ev.FullPath.Contains(".svn"))
+            {
+                Log.Debug("IN: Skip exclusion: {0}", ev.FullPath);
+                return true;
+            }
+
+            if (ev.ChangeType == Changes.Changed)
+            {
+                if (Utils.IsDirectory(ev.FullPath))
+                {
+                    Log.Debug("IN: Skip directory update: {0}", ev.FullPath);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private bool TryCommitNew(FileSystemEventArgs ev) {
+            if (Events.Count == 0)
+            {
+                Log.Debug("IN: Add first event: {0}", ev.FullPath);
+                LogEventsNoLock();
+                return true;
+            }
+
+            var last = Events[Events.Count - 1];
+            if (last.FullPath != ev.FullPath)
+            {
+                Log.Debug("IN: Add different events: {0} => {1}", last.FullPath, ev.FullPath);
+                LogEventsNoLock();
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool TryReduce(FileSystemEventArgs ev) {
+            bool applied = false;
+            var curIdx = Events.Count - 1;
+            var prevIdx = Events.Count - 2;
+            while (Events.Count > 1 && Events[prevIdx].FullPath == Events[curIdx].FullPath)
+            {
+                var prev = Events[prevIdx];
+                var cur = Events[curIdx];
+                if (prev.ChangeType == cur.ChangeType) {
+                    Log.Debug("IN: Skip duplicate: {0} => {1}", prev.FullPath, cur.FullPath);
+                } else if (prev.ChangeType == Changes.Deleted && cur.ChangeType != Changes.Deleted) {
+                    Log.Debug("IN: Rewrite deletion for update: {0} => {1}", prev.FullPath, cur.FullPath);
+                } else if ((prev.ChangeType & (Changes.Changed | Changes.Created)) != 0) {
+                    if (cur.ChangeType == Changes.Renamed) {
+                        Log.Debug("IN: Rewrite rename for update: {0} => {1}", prev.FullPath, cur.FullPath);
+                    } else if ((cur.ChangeType & (Changes.Changed | Changes.Created)) != 0) {
+                        Log.Debug("IN: Rewrite create for update: {0} => {1}", prev.FullPath, cur.FullPath);
+                    }
+                } else if (prev.ChangeType != Changes.Deleted && cur.ChangeType == Changes.Deleted) {
+                    Log.Debug("IN: Rewrite update for deletion: {0} => {1}", prev.FullPath, cur.FullPath);
+                } else {
+                    return false;
+                }
+
+                applied = true;
+                Events[prevIdx] = Events[curIdx];
+                Events.RemoveAt(curIdx);
+                LogEventsNoLock();
+                if (prevIdx == 0) {
+                    return true;
+                }
+
+                --prevIdx;
+                --curIdx;
+            }
+
+            return applied;
+        }
+
+        private void LogEventsNoLock()
+        {
+            var stream = new StringWriter();
+            stream.Write("Events: ");
+            foreach (var ev in Events)
+            {
+                stream.Write(ev.ChangeType.ToString()[0]);
+            }
+
+            stream.Write("\n");
+            Log.Debug(stream.ToString());
+        }
+    };
 
     class Program
     {
@@ -21,10 +262,8 @@ namespace sync
 
         static void Main(string[] args)
         {
-            EventTimer.Elapsed += FlushEvents;
-            EventTimer.AutoReset = false;
-            var watching = StartWatching();
-            Console.WriteLine("Ready to watch filesystem.");
+            Logger logger = new Logger();
+            EventMonitor monitor = new EventMonitor(LocalRoot, logger);
 
             // Setup session options
             SessionOptions sessionOptions = new SessionOptions
@@ -40,14 +279,14 @@ namespace sync
             {
                 // Connect
                 session.ReconnectTime = TimeSpan.MaxValue;
-                session.Timeout = TimeSpan.FromSeconds(3);
+                session.Timeout = TimeSpan.FromSeconds(5);
                 while (true)
                 {
                     try
                     {
                         session.Open(sessionOptions);
                         Console.WriteLine("Ready to transmit changes.");
-                        SyncChanges(session);
+                        SyncChanges(session, monitor);
                     }
                     catch (SessionRemoteException err)
                     {
@@ -63,19 +302,6 @@ namespace sync
                     }
                 }
             }
-
-            Console.ReadKey();
-        }
-
-        private static void PrintEvents()
-        {
-            Console.Write("Events: ");
-            foreach (var ev in Events)
-            {
-                Console.Write(ev.ChangeType.ToString()[0]);
-            }
-
-            Console.Write("\n");
         }
 
         private static void ReopenSession(Session session)
@@ -101,7 +327,7 @@ namespace sync
             while (true)
             {
                 var result = RemoteUpdate(session, localPath, remotePath, isDirectory, options);
-                var localParentDir = Path.GetDirectoryName(localPath);
+                var localParentDir = Path.GetDirectoryName(localPath) + Path.DirectorySeparatorChar;
                 var remoteParentDir = AsRemotePath(session, localParentDir);
                 if (result == null || result.IsSuccess || session.FileExists(remoteParentDir))
                 {
@@ -117,10 +343,12 @@ namespace sync
                 var parentResult =
                     RemoteUpdateRecursive(session, localParentDir, remoteParentDir, true, options);
 
-                if (parentResult != null)
+                if (parentResult == null || parentResult.IsSuccess)
                 {
-                    return parentResult;
+                    continue;
                 }
+
+                return parentResult;
             }
         }
 
@@ -201,13 +429,13 @@ namespace sync
             TransferOptions options,
             FileSystemEventArgs ev)
         {
-            bool isDirectory = IsDirectory(ev.FullPath);
-            if (ev.ChangeType == WatcherChangeTypes.Deleted && File.Exists(ev.FullPath))
+            bool isDirectory = Utils.IsDirectory(ev.FullPath);
+            if (ev.ChangeType == Changes.Deleted && File.Exists(ev.FullPath))
             {
-                ev = new FileSystemEventArgs(WatcherChangeTypes.Changed, LocalRoot, ev.Name);
+                ev = new FileSystemEventArgs(Changes.Changed, LocalRoot, ev.Name);
                 Console.WriteLine("Perverting deletion to update {0}", ev.FullPath);
             }
-            else if (ev.ChangeType != WatcherChangeTypes.Deleted)
+            else if (ev.ChangeType != Changes.Deleted)
             {
                 if (isDirectory && !Directory.Exists(ev.FullPath) || !isDirectory && !File.Exists(ev.FullPath))
                 {
@@ -220,14 +448,14 @@ namespace sync
             Console.WriteLine("Propagating event: {0} {1}", ev.ChangeType, ev.FullPath);
             switch (ev.ChangeType)
             {
-                case WatcherChangeTypes.Changed:
-                case WatcherChangeTypes.Created:
+                case Changes.Changed:
+                case Changes.Created:
                     return RemoteUpdateRecursive(session, ev.FullPath, remotePath, isDirectory, options);
 
-                case WatcherChangeTypes.Deleted:
+                case Changes.Deleted:
                     return RemoteDelete(session, remotePath);
 
-                case WatcherChangeTypes.Renamed:
+                case Changes.Renamed:
                     {
                         var rev = (RenamedEventArgs)ev;
                         string oldRemotePath = AsRemotePath(session, rev.OldFullPath);
@@ -238,43 +466,6 @@ namespace sync
                 default:
                     return null;
             }
-        }
-
-        private static EventPool SnoopChanges()
-        {
-            EventPool tmpEvents;
-            lock (Events)
-            {
-                if (Events.Count == 0)
-                {
-                    Console.WriteLine("Waiting for changes...");
-                    Monitor.Wait(Events);
-                }
-
-                tmpEvents = Events;
-                Events = new EventPool();
-            }
-
-            return tmpEvents;
-        }
-
-        private static FileSystemWatcher StartWatching()
-        {
-            FileSystemWatcher watcher = new FileSystemWatcher
-            {
-                Path = LocalRoot,
-                IncludeSubdirectories = true,
-                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.DirectoryName,
-                InternalBufferSize = 64*1024
-            };
-
-            watcher.Changed += new FileSystemEventHandler(OnChanged);
-            watcher.Created += new FileSystemEventHandler(OnChanged);
-            watcher.Deleted += new FileSystemEventHandler(OnChanged);
-            watcher.Renamed += new RenamedEventHandler(OnChanged);
-
-            watcher.EnableRaisingEvents = true;
-            return watcher;
         }
 
         private static EventPool PreprocessEvents(EventPool events)
@@ -304,15 +495,15 @@ namespace sync
                     continue;
                 }
 
-                if (next.ChangeType == WatcherChangeTypes.Deleted)
+                if (next.ChangeType == Changes.Deleted)
                 {
                     Console.WriteLine("Skip change for next deletion {0}", cur.FullPath);
                     continue;
                 }
 
                 if (
-                    cur.ChangeType == WatcherChangeTypes.Deleted
-                    && (next.ChangeType == WatcherChangeTypes.Changed || next.ChangeType == WatcherChangeTypes.Created)
+                    cur.ChangeType == Changes.Deleted
+                    && (next.ChangeType == Changes.Changed || next.ChangeType == Changes.Created)
                 )
                 {
                     Console.WriteLine("Skip deletion for next change {0}", cur.FullPath);
@@ -325,7 +516,7 @@ namespace sync
             return result;
         }
 
-        private static void SyncChanges(Session session)
+        private static void SyncChanges(Session session, EventMonitor monitor)
         {
             TransferOptions transferOptions = new TransferOptions
             {
@@ -341,8 +532,9 @@ namespace sync
             EventPool writeBackEvents = new EventPool();
             while (true)
             {
-                var events = SnoopChanges();
+                var events = monitor.Wait();
                 events = PreprocessEvents(events);
+                Console.WriteLine("Propagating {0} events", events.Count);
                 foreach (var ev in events)
                 {
                     if (unrecoverableError != null)
@@ -388,153 +580,6 @@ namespace sync
                     }
 
                     throw unrecoverableError;
-                }
-            }
-        }
-
-        private static FileAttributes? SafeGetAttrs(string path)
-        {
-            try
-            {
-                return File.GetAttributes(path);
-            }
-            catch (DirectoryNotFoundException)
-            {
-                return null;
-            }
-            catch (FileNotFoundException)
-            {
-                return null;
-            }
-        }
-
-        private static bool IsDirectory(string path)
-        {
-            var attr = SafeGetAttrs(path);
-            return attr.HasValue && (attr.Value & FileAttributes.Directory) == FileAttributes.Directory;
-        }
-
-        private static void OnChanged(object source, FileSystemEventArgs e)
-        {
-            Console.WriteLine("IN: Timer reset: {0}, {1}", e.ChangeType, e.FullPath);
-            EventTimer.Enabled = false;
-            EventTimer.Enabled = true;
-
-            if (e.FullPath.Contains("~"))
-            {
-                Console.WriteLine("IN: Skip tilda: {0}", e.FullPath);
-                PrintEvents();
-                return;
-            }
-
-            if (e.ChangeType == WatcherChangeTypes.Renamed)
-            {
-                RenamedEventArgs re = (RenamedEventArgs)e;
-                if (re.OldFullPath.Contains("~"))
-                {
-                    e = new FileSystemEventArgs(WatcherChangeTypes.Changed, LocalRoot, re.Name);
-                    Console.WriteLine("IN: Refactor rename to update: {0}", e.FullPath);
-                }
-            }
-
-            if (e.ChangeType == WatcherChangeTypes.Changed)
-            {
-                if (IsDirectory(e.FullPath))
-                {
-                    Console.WriteLine("IN: Skip directory update: {0}", e.FullPath);
-                    PrintEvents();
-                    return;
-                }
-            }
-
-
-            lock (Events)
-            {
-                if (Events.Count == 0)
-                {
-                    Console.WriteLine("IN: Add first event: {0}", e.FullPath);
-                    Events.Add(e);
-                    PrintEvents();
-                    return;
-                }
-
-                var last = Events[Events.Count - 1];
-                if (last.FullPath != e.FullPath)
-                {
-                    Console.WriteLine("IN: Add different events: {0} => {1}", last.FullPath, e.FullPath);
-                    Events.Add(e);
-                    PrintEvents();
-                    return;
-                }
-
-                Events.Add(e);
-                bool ruleApply = false;
-                var curIdx = Events.Count - 1;
-                var precIdx = Events.Count - 2;
-                while (Events[precIdx].FullPath == Events[curIdx].FullPath)
-                {
-                    var prec = Events[precIdx];
-                    var cur = Events[curIdx];
-
-                    if (prec.ChangeType == cur.ChangeType)
-                    {
-                        Console.WriteLine("IN: Skip duplicate: {0} => {1}", last.FullPath, e.FullPath);
-                    }
-                    else if (prec.ChangeType == WatcherChangeTypes.Deleted && cur.ChangeType != WatcherChangeTypes.Deleted)
-                    {
-                        Console.WriteLine("IN: Rewrite deletion for update: {0} => {1}", prec.FullPath, cur.FullPath);
-                    }
-                    else if (
-                        (prec.ChangeType == WatcherChangeTypes.Changed || prec.ChangeType == WatcherChangeTypes.Created)
-                        && cur.ChangeType == WatcherChangeTypes.Renamed
-                    )
-                    {
-                        Console.WriteLine("IN: Rewrite rename for update: {0} => {1}", prec.FullPath, cur.FullPath);
-                    }
-                    else if (
-                        (prec.ChangeType == WatcherChangeTypes.Changed || prec.ChangeType == WatcherChangeTypes.Created)
-                        && (cur.ChangeType == WatcherChangeTypes.Changed || cur.ChangeType == WatcherChangeTypes.Created))
-                    {
-                        Console.WriteLine("IN: Rewrite create for update: {0} => {1}", prec.FullPath, cur.FullPath);
-                    }
-                    else if (prec.ChangeType != WatcherChangeTypes.Deleted && cur.ChangeType == WatcherChangeTypes.Deleted)
-                    {
-                        Console.WriteLine("IN: Rewrite update for deletion: {0} => {1}", prec.FullPath, cur.FullPath);
-                    }
-                    else
-                    {
-                        break;
-                    }
-
-                    ruleApply = true;
-                    Events[precIdx] = Events[curIdx];
-                    Events.RemoveAt(curIdx);
-                    PrintEvents();
-                    if (precIdx == 0)
-                    {
-                        break;
-                    }
-
-                    --precIdx;
-                    --curIdx;
-                }
-
-                if (!ruleApply)
-                {
-                    Console.WriteLine("IN: Added, no rule applied: {0}", e.FullPath);
-                    PrintEvents();
-                }
-            }
-        }
-
-        private static void FlushEvents(Object source, System.Timers.ElapsedEventArgs e)
-        {
-            Console.WriteLine("Timer signals");
-            lock (Events)
-            {
-                if (Events.Count > 0)
-                {
-                    Monitor.Pulse(Events);
                 }
             }
         }
