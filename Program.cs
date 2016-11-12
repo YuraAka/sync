@@ -3,14 +3,14 @@ using System.IO;
 using System.Collections.Generic;
 using System.Threading;
 using System.Reflection;
+using System.Diagnostics;
 using WinSCP;
 using NDesk.Options;
 
 /// TODO
-/// arg parse
+/// detect and run batch load
 /// event log
 /// user params from registry
-/// detect and run batch load
 /// gui
 ///
 
@@ -44,23 +44,61 @@ namespace Sync {
         }
     }
 
-    class Logger {
+    interface ILogger {
+
+        void Debug(string format, params object[] arg);
+
+        void Info(string format, params object[] arg);
+
+        void Error(string format, params object[] arg);
+    };
+
+    class EventLogger : ILogger {
+        private EventLog Log;
         public int Verbosity { get; set; }
 
-        public void Debug(string format, params object[] arg) {
+        public EventLogger() {
+            if (!EventLog.SourceExists("YSync")) {
+                EventLog.CreateEventSource("YSync", "YSync");
+                Console.WriteLine("Restart app to use Event log");
+            } else {
+                Log = new EventLog("YSync");
+            }
+        }
+
+        public virtual void Debug(string format, params object[] arg) {
+            if (Verbosity >= 2) {
+                Log.WriteEntry(String.Format(format, arg), EventLogEntryType.Information, 100, 1);
+            }
+        }
+
+        public virtual void Info(string format, params object[] arg) {
+            if (Verbosity >= 1) {
+                Console.WriteLine("INF: " + format, arg);
+            }
+        }
+
+        public virtual void Error(string format, params object[] arg) {
+            Console.WriteLine("ERR: " + format, arg);
+        }
+    }
+    class ConsoleLogger : ILogger {
+        public int Verbosity { get; set; }
+
+        public virtual void Debug(string format, params object[] arg) {
             if (Verbosity >= 2) {
                 Console.WriteLine("DBG: " + format, arg);
             }
         }
 
-        public void Info(string format, params object[] arg)
+        public virtual void Info(string format, params object[] arg)
         {
             if (Verbosity >= 1) {
                 Console.WriteLine("INF: " + format, arg);
             }
         }
 
-        public void Error(string format, params object[] arg)
+        public virtual void Error(string format, params object[] arg)
         {
             Console.WriteLine("ERR: " + format, arg);
         }
@@ -69,12 +107,12 @@ namespace Sync {
     class ChangesMonitor {
         private EventPool Events = new EventPool();
         private Timer Quantifier;
-        private Logger Log;
+        private ILogger Log;
         private FileSystemWatcher Watcher;
 
         public string SourcePath { get; set; }
 
-        public ChangesMonitor(Logger log) {
+        public ChangesMonitor(ILogger log) {
             Log = log;
             Quantifier = new Timer() {
                 AutoReset = false,
@@ -269,7 +307,7 @@ namespace Sync {
 
     class ChangesTransmitter {
         private Session Session = new Session();
-        private Logger Log;
+        private ILogger Log;
         private EventPool LostLifeChanges = new EventPool();
         private string SourcePath { set; get; }
 
@@ -282,7 +320,7 @@ namespace Sync {
 
         public TimeSpan Timeout { set; get; } = TimeSpan.FromSeconds(5);
 
-        public ChangesTransmitter(Logger log) {
+        public ChangesTransmitter(ILogger log) {
             Log = log;
             Session.ReconnectTime = TimeSpan.MaxValue;
             UnpackWinSCP();
@@ -308,7 +346,8 @@ namespace Sync {
                     Log.Error("Session timeout. Retryng to connect...");
                     CloseSession();
                 } catch (Exception err) {
-                    Log.Error("UNKNOWN EXCEPTION: {0}. Yury, you MUST fix it!", err.StackTrace);
+                    Log.Error("UNKNOWN EXCEPTION: {0}, {1}. Yury, you MUST fix it!", err, err.StackTrace);
+
                     if (LostLifeChanges.Count > 0) {
                         var first = LostLifeChanges[0];
                         Log.Debug("Skip problem change: {0} {1}", first.ChangeType, first.FullPath);
@@ -356,7 +395,8 @@ namespace Sync {
                 HostName = Host,
                 UserName = User,
                 SshPrivateKeyPath = PrivateKey,
-                PrivateKeyPassphrase = Passphrase
+                PrivateKeyPassphrase = Passphrase,
+                Protocol = Protocol.Scp
             };
         }
 
@@ -584,7 +624,7 @@ namespace Sync {
                 return;
             }
 
-            Logger logger = new Logger() {
+            ILogger logger = new ConsoleLogger() {
                 Verbosity = Verbosity
             };
 
