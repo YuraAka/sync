@@ -2,6 +2,7 @@
 using System.IO;
 using System.Collections.Generic;
 using System.Threading;
+using System.Reflection;
 using WinSCP;
 using NDesk.Options;
 
@@ -12,7 +13,8 @@ using NDesk.Options;
 /// detect and run batch load
 /// gui
 ///
-namespace sync {
+
+namespace Sync {
     using EventPool = List<FileSystemEventArgs>;
     using Timer = System.Timers.Timer;
     using Changes = WatcherChangeTypes;
@@ -266,11 +268,10 @@ namespace sync {
     };
 
     class ChangesTransmitter {
-        Session Session = new Session();
-        Logger Log;
-        EventPool LostLifeChanges = new EventPool();
-
-        string SourcePath { set; get; }
+        private Session Session = new Session();
+        private Logger Log;
+        private EventPool LostLifeChanges = new EventPool();
+        private string SourcePath { set; get; }
 
         public string Host { set; get; }
         public string User { set; get; }
@@ -284,6 +285,7 @@ namespace sync {
         public ChangesTransmitter(Logger log) {
             Log = log;
             Session.ReconnectTime = TimeSpan.MaxValue;
+            UnpackWinSCP();
         }
 
         public void WaitChanges(ChangesMonitor source) {
@@ -291,6 +293,7 @@ namespace sync {
             var sessionOptions = CreateSessionOptions();
             var transferOptions = CreateTransferOptions();
             Session.Timeout = Timeout;
+
             while (true) {
                 try {
                     OpenSession(sessionOptions);
@@ -328,6 +331,24 @@ namespace sync {
                 Session.Open(options);
                 Log.Info("Ready to transmit changes.");
             }
+        }
+
+        private void UnpackWinSCP() {
+            string executableName = "WinSCP.exe";
+            string executablePath = Path.Combine(Directory.GetCurrentDirectory(), executableName);
+            if (File.Exists(executablePath)) {
+                Log.Debug("Using existing winscp {0}", executablePath);
+                return;
+            }
+
+            Assembly executingAssembly = Assembly.GetExecutingAssembly();
+            string resourceName = executingAssembly.GetName().Name + "." + "WinSCP.exe";
+            using (Stream resource = Assembly.GetExecutingAssembly().GetManifestResourceStream(resourceName))
+            using (Stream file = new FileStream(executablePath, FileMode.Create, FileAccess.Write)) {
+                resource.CopyTo(file);
+            }
+
+            Log.Debug("Unpack winscp {0}", executablePath);
         }
 
         private SessionOptions CreateSessionOptions() {
@@ -399,7 +420,7 @@ namespace sync {
 
         private string GetOldPath(FileSystemEventArgs change) {
             if (change.ChangeType != Changes.Renamed) {
-                throw new InvalidOperationException("Change to a rename");
+                throw new InvalidOperationException("Change is not a rename change");
             }
 
             var rename = (RenamedEventArgs)change;
@@ -407,7 +428,6 @@ namespace sync {
         }
 
         private void CreateDirWithParents(string dirPath) {
-            /// todo test it
             string relativePath = dirPath.Substring(SourcePath.Length);
             var separator = new[] { Path.DirectorySeparatorChar };
             var subdirs = relativePath.Split(separator, StringSplitOptions.RemoveEmptyEntries);
@@ -576,7 +596,7 @@ namespace sync {
                 Host = Host,
                 User = User,
                 PrivateKey = PrivateKey,
-                DestinationPath = DestinationPath
+                DestinationPath = DestinationPath,
             };
 
             monitor.TurnOn();
