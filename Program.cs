@@ -5,20 +5,17 @@ using System.Threading;
 using WinSCP;
 
 /// TODO
-/// event monitor vs event transmitter
-/// exceptions are cheap?
-/// lock on ref object
 /// exception handling
 /// event log
 /// user params from registry
 /// detect and run batch load
 /// gui
 ///
-namespace sync
-{
+namespace sync {
     using EventPool = List<FileSystemEventArgs>;
     using Timer = System.Timers.Timer;
     using Changes = WatcherChangeTypes;
+    using TransmitResult = OperationResultBase;
 
     class Utils {
         public static bool IsDirectory(string path)
@@ -46,20 +43,25 @@ namespace sync
 
     class Logger {
         public void Debug(string format, params object[] arg) {
-            Console.WriteLine(format, arg);
+            Console.WriteLine("DBG: " + format, arg);
         }
 
         public void Info(string format, params object[] arg)
         {
-            Console.WriteLine(format, arg);
+            Console.WriteLine("INF: " + format, arg);
+        }
+
+        public void Error(string format, params object[] arg)
+        {
+            Console.WriteLine("ERR: " + format, arg);
         }
     };
 
     class ChangesMonitor {
         private EventPool Events = new EventPool();
         private Timer Quantifier;
-        private FileSystemWatcher FileMonitor;
         private Logger Log;
+        private FileSystemWatcher Watcher;
 
         public string SourcePath { get; set; }
 
@@ -71,20 +73,10 @@ namespace sync
             };
 
             Quantifier.Elapsed += Flush;
+        }
 
-            FileMonitor = new FileSystemWatcher
-            {
-                Path = SourcePath,
-                IncludeSubdirectories = true,
-                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.DirectoryName,
-                InternalBufferSize = 64 * 1024
-            };
-
-            FileMonitor.Changed += new FileSystemEventHandler(OnChanged);
-            FileMonitor.Created += new FileSystemEventHandler(OnChanged);
-            FileMonitor.Deleted += new FileSystemEventHandler(OnChanged);
-            FileMonitor.Renamed += new RenamedEventHandler(OnChanged);
-            FileMonitor.EnableRaisingEvents = true;
+        public void TurnOn() {
+            Watcher = CreateWatcher();
             Log.Info("Ready to monitor filesystem.");
         }
 
@@ -102,6 +94,22 @@ namespace sync
             }
 
             return result;
+        }
+
+        private FileSystemWatcher CreateWatcher() {
+            var watcher = new FileSystemWatcher {
+                Path = SourcePath,
+                IncludeSubdirectories = true,
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.DirectoryName,
+                InternalBufferSize = 64 * 1024
+            };
+
+            watcher.Changed += new FileSystemEventHandler(OnChanged);
+            watcher.Created += new FileSystemEventHandler(OnChanged);
+            watcher.Deleted += new FileSystemEventHandler(OnChanged);
+            watcher.Renamed += new RenamedEventHandler(OnChanged);
+            watcher.EnableRaisingEvents = true;
+            return watcher;
         }
 
         private void Flush(Object source, System.Timers.ElapsedEventArgs ev) {
@@ -253,7 +261,7 @@ namespace sync
     class ChangesTransmitter {
         Session Session = new Session();
         Logger Log;
-        static EventPool WriteBackChanges = new EventPool();
+        EventPool LostLifeChanges = new EventPool();
 
         string SourcePath { set; get; }
 
@@ -273,55 +281,253 @@ namespace sync
 
         public void WaitChanges(ChangesMonitor source) {
             SourcePath = source.SourcePath;
-            var sessionOptions = new SessionOptions {
+            var sessionOptions = CreateSessionOptions();
+            var transferOptions = CreateTransferOptions();
+            Session.Timeout = Timeout;
+            while (true) {
+                try {
+                    OpenSession(sessionOptions);
+                    while (true) {
+                        var changes = RetrieveChanges(source);
+                        TransferAll(changes, transferOptions);
+                    }
+                } catch (SessionRemoteException err) {
+                    Log.Error("Remote failure: {0}", err);
+                    CloseSession();
+                } catch (TimeoutException) {
+                    Log.Error("Session timeout. Retryng to connect...");
+                    CloseSession();
+                } catch (Exception err) {
+                    Log.Error("UNKNOWN EXCEPTION: {0}. Yury, you MUST fix it!", err.StackTrace);
+                    if (LostLifeChanges.Count > 0) {
+                        var first = LostLifeChanges[0];
+                        Log.Debug("Skip problem change: {0} {1}", first.ChangeType, first.FullPath);
+                        LostLifeChanges.RemoveAt(0);
+                    }
+
+                    Thread.Sleep(1000);
+                }
+            }
+        }
+
+        private void OpenSession(SessionOptions options) {
+            if (options.SshHostKeyFingerprint == null)
+            {
+                options.SshHostKeyFingerprint = Session.ScanFingerprint(options);
+            }
+
+            if (!Session.Opened)
+            {
+                Session.Open(options);
+                Log.Info("Ready to transmit changes.");
+            }
+        }
+
+        private SessionOptions CreateSessionOptions() {
+            return new SessionOptions {
                 HostName = Host,
                 UserName = User,
                 SshPrivateKeyPath = PrivateKey,
                 PrivateKeyPassphrase = Passphrase
             };
+        }
 
-            var transferOptions = new TransferOptions {
+        private TransferOptions CreateTransferOptions() {
+            return new TransferOptions {
                 TransferMode = TransferMode.Binary,
-                ResumeSupport = new TransferResumeSupport {
+                ResumeSupport = new TransferResumeSupport
+                {
                     State = TransferResumeSupportState.Smart,
-                    Threshold = 1024
+                    Threshold = 4*1024
                 }
             };
+        }
 
-            Session.Timeout = Timeout;
-            while (true) {
-                try {
-                    if (sessionOptions.SshHostKeyFingerprint.Length == 0) {
-                        sessionOptions.SshHostKeyFingerprint = Session.ScanFingerprint(sessionOptions);
-                    }
-
-                    WaitChangesUntilError(source, sessionOptions, transferOptions);
-                } catch (SessionRemoteException err) {
-                    Console.WriteLine("ERROR: Remote failure: {0}", err);
-                    CloseSession();
-                    continue;
-                } catch (TimeoutException) {
-                    Console.WriteLine("ERROR: Session timeout. Retryng to connect...");
-                    CloseSession();
+        private void TransferAll(EventPool changes, TransferOptions options) {
+            Exception lostLifeError = null;
+            foreach (var change in changes) {
+                if (lostLifeError != null) {
+                    LostLifeChanges.Add(change);
                     continue;
                 }
-                /// todo remove first event and retry
+
+                try {
+                    TransferOne(change, options);
+                } catch (SessionRemoteException err) {
+                    Log.Error("Skip change {0} {1} due to {2}", change.ChangeType, change.FullPath, err);
+                } catch (Exception err) {
+                    Log.Error("Emergency changes save started due to error: {0}", err);
+                    lostLifeError = err;
+                    LostLifeChanges.Add(change);
+                }
+            }
+
+            if (lostLifeError != null) {
+                throw lostLifeError;
             }
         }
 
-        private void WaitChangesUntilError(
-            ChangesMonitor source,
-            SessionOptions sessionOptions,
-            TransferOptions transferOptions
-        ) {
-            Session.Open(sessionOptions);
-            Console.WriteLine("Ready to transmit changes.");
-
-            while (true) {
-                var changes = source.Wait();
-                /// ...
+        private void TransferOne(FileSystemEventArgs change, TransferOptions options) {
+            change = Transform(change);
+            if (change == null) {
+                return;
             }
-            //SyncChanges(session, monitor);
+
+            Log.Debug("Transfer change {0} {1}", change.ChangeType, change.FullPath);
+            switch (change.ChangeType) {
+                case Changes.Changed:
+                case Changes.Created:
+                    Update(change.FullPath, options);
+                    break;
+
+                case Changes.Deleted:
+                    Delete(change.FullPath);
+                    break;
+
+                case Changes.Renamed:
+                    Rename(GetOldPath(change), change.FullPath);
+                    break;
+            }
+        }
+
+        private string GetOldPath(FileSystemEventArgs change) {
+            if (change.ChangeType != Changes.Renamed) {
+                throw new InvalidOperationException("Change to a rename");
+            }
+
+            var rename = (RenamedEventArgs)change;
+            return rename.OldFullPath;
+        }
+
+        private void CreateDirWithParents(string dirPath) {
+            /// todo test it
+            string relativePath = dirPath.Substring(SourcePath.Length);
+            var separator = new[] { Path.DirectorySeparatorChar };
+            var subdirs = relativePath.Split(separator, StringSplitOptions.RemoveEmptyEntries);
+            string readyPath = string.Copy(SourcePath);
+            foreach (var subdir in subdirs) {
+                readyPath = Path.Combine(readyPath, subdir) + Path.DirectorySeparatorChar;
+                var remotePath = AsRemotePath(readyPath);
+                if (!Session.FileExists(remotePath)) {
+                    Session.CreateDirectory(remotePath);
+                }
+            }
+        }
+
+        private void Update(string path, TransferOptions options) {
+            bool isDir = Utils.IsDirectory(path);
+            try {
+                if (isDir) {
+                    UpdateDirectory(path);
+                } else {
+                    UpdateFile(path, options);
+                }
+            } catch (SessionRemoteException err) {
+                var remotePath = AsRemotePath(path);
+                Log.Debug("Update {0} failed: {1}", remotePath, err);
+                var localParentDir = Path.GetDirectoryName(path) + Path.DirectorySeparatorChar;
+                var remoteParentDir = AsRemotePath(localParentDir);
+                if (Session.FileExists(remoteParentDir)) {
+                    throw;
+                }
+
+                CreateDirWithParents(localParentDir);
+                Log.Debug("Retrying after parents creation");
+                Update(path, options);
+            }
+        }
+
+        private void UpdateFile(string localPath, TransferOptions options) {
+            var remotePath = AsRemotePath(localPath);
+            Session.PutFiles(localPath, remotePath, false, options).Check();
+            Log.Info("Upload {0} to {1}", localPath, remotePath);
+        }
+
+        private void UpdateDirectory(string localPath) {
+            var remotePath = AsRemotePath(localPath);
+            if (Session.FileExists(remotePath)) {
+                Log.Debug("Remove existing directory {0}", remotePath);
+                Session.RemoveFiles(remotePath).Check();
+            }
+
+            Session.CreateDirectory(remotePath);
+            Log.Info("Create directory {0}", remotePath);
+        }
+
+        private void Delete(string localPath) {
+            var remotePath = AsRemotePath(localPath);
+            if (Session.FileExists(remotePath)) {
+                Session.RemoveFiles(remotePath).Check();
+                Log.Info("Remove {0}", remotePath);
+            }
+        }
+
+        private void Rename(string fromPath, string toPath) {
+            if (Utils.IsDirectory(toPath)) {
+                Delete(toPath);
+            }
+
+            var fromRemotePath = AsRemotePath(fromPath);
+            var toRemotePath = AsRemotePath(toPath);
+            Session.MoveFile(fromRemotePath, toRemotePath);
+            Log.Info("Rename from {0} to {1}", fromRemotePath, toRemotePath);
+        }
+
+        private void LogResult(TransmitResult result) {
+            if (result.IsSuccess) {
+                return;
+            }
+
+            StringWriter msg = new StringWriter();
+            msg.Write("Operation has failed. Suberrors: \n");
+            foreach (var fail in result.Failures) {
+                msg.Write("* Error {0}\n", fail);
+            }
+
+            Log.Error(msg.ToString());
+        }
+
+        private FileSystemEventArgs Transform(FileSystemEventArgs change) {
+            bool exist = File.Exists(change.FullPath) || Directory.Exists(change.FullPath);
+            if (change.ChangeType == Changes.Deleted && exist) {
+                Log.Debug("Transform deletion to update {0} due to file exist", change.FullPath);
+                return new FileSystemEventArgs(Changes.Changed, SourcePath, change.Name);
+            }
+
+            if (change.ChangeType == Changes.Deleted) {
+                return change;
+            }
+
+            if (!exist) {
+                Log.Debug("Skip update nonexisting {0} of file {1}", change.ChangeType, change.FullPath);
+                return null;
+            }
+
+            if (change.ChangeType != Changes.Renamed) {
+                return change;
+            }
+
+            var rename = (RenamedEventArgs)change;
+            var remoteOldPath = AsRemotePath(rename.OldFullPath);
+            if (!Session.FileExists(remoteOldPath)) {
+                Log.Debug("Transform rename to update {0} due to file does not exist", remoteOldPath);
+                return new FileSystemEventArgs(Changes.Changed, SourcePath, change.Name);
+            }
+
+            return change;
+        }
+
+        private EventPool RetrieveChanges(ChangesMonitor source)
+        {
+            if (LostLifeChanges.Count == 0)
+            {
+                return source.Wait();
+            }
+
+            // we failed last time and there are unprocessed changes
+            var changes = new EventPool(LostLifeChanges);
+            LostLifeChanges.Clear();
+            return changes;
         }
 
         private void CloseSession()
@@ -335,71 +541,10 @@ namespace sync
         private string AsRemotePath(string path) {
             return Session.TranslateLocalPathToRemote(path, SourcePath, DestinationPath);
         }
-
-        private static void SyncChanges(Session session, ChangesMonitor monitor)
-        {
-            Exception unrecoverableError = null;
-            EventPool writeBackEvents = new EventPool();
-            while (true)
-            {
-                var events = monitor.Wait();
-                events = PreprocessEvents(events);
-                Console.WriteLine("Propagating {0} events", events.Count);
-                foreach (var ev in events)
-                {
-                    if (unrecoverableError != null)
-                    {
-                        writeBackEvents.Add(ev);
-                        continue;
-                    }
-
-                    OperationResultBase result = null;
-                    try
-                    {
-                        result = PropagateChanges(session, transferOptions, ev);
-                    }
-                    catch (SessionRemoteException err)
-                    {
-                        Console.WriteLine("ERROR: {0}", err);
-                    }
-                    catch (Exception err)
-                    {
-                        Console.WriteLine("FAILURE: {0}. \nContinue collecting events...", err);
-                        unrecoverableError = err;
-                        writeBackEvents.Add(ev);
-                        continue;
-                    }
-
-                    if (result != null && !result.IsSuccess)
-                    {
-                        foreach (var fail in result.Failures)
-                        {
-                            Console.WriteLine("ERROR: {0}", fail);
-                        }
-                    }
-                }
-
-                if (unrecoverableError != null)
-                {
-                    lock (WriteBackChanges)
-                    {
-                        foreach (var ev in writeBackEvents)
-                        {
-                            WriteBackChanges.Add(ev);
-                        }
-                    }
-
-                    throw unrecoverableError;
-                }
-            }
-        }
     }
 
-    class Program
+    class FileChangesSync
     {
-        private static EventPool Events
-            = new EventPool();
-
         static void Main(string[] args) {
             Logger logger = new Logger();
             ChangesMonitor monitor = new ChangesMonitor(logger) {
@@ -413,208 +558,8 @@ namespace sync
                 DestinationPath = "/home/yuraaka/blue/"
             };
 
+            monitor.TurnOn();
             transmitter.WaitChanges(monitor);
         }
-
-        private static OperationResultBase RemoteUpdateRecursive(
-            Session session,
-            string localPath,
-            string remotePath,
-            bool isDirectory,
-            TransferOptions options)
-        {
-            while (true)
-            {
-                var result = RemoteUpdate(session, localPath, remotePath, isDirectory, options);
-                var localParentDir = Path.GetDirectoryName(localPath) + Path.DirectorySeparatorChar;
-                var remoteParentDir = AsRemotePath(session, localParentDir);
-                if (result == null || result.IsSuccess || session.FileExists(remoteParentDir))
-                {
-                    return result;
-                }
-
-                Console.WriteLine(
-                    "ERROR: Cannot create file {0}. Create parent dir {1}",
-                    remotePath,
-                    remoteParentDir
-                );
-
-                var parentResult =
-                    RemoteUpdateRecursive(session, localParentDir, remoteParentDir, true, options);
-
-                if (parentResult == null || parentResult.IsSuccess)
-                {
-                    continue;
-                }
-
-                return parentResult;
-            }
-        }
-
-        private static OperationResultBase RemoteUpdate(
-            Session session,
-            string localPath,
-            string remotePath,
-            bool isDirectory,
-            TransferOptions options)
-        {
-            if (!isDirectory)
-            {
-                var result = session.PutFiles(localPath, remotePath, false, options);
-                Console.WriteLine("Upload {0} to {1}", localPath, remotePath);
-                return result;
-            }
-
-            if (session.FileExists(remotePath))
-            {
-                Console.WriteLine("Remove existing directory {0}", remotePath);
-                session.RemoveFiles(remotePath).Check();
-            }
-
-            session.CreateDirectory(remotePath);
-            Console.WriteLine("Create directory {0}", remotePath);
-            return null;
-        }
-
-        private static OperationResultBase RemoteDelete(Session session, string remotePath)
-        {
-            if (session.FileExists(remotePath))
-            {
-                var result = session.RemoveFiles(remotePath);
-                Console.WriteLine("Remove {0}", remotePath);
-                return result;
-            }
-
-            return null;
-        }
-
-        private static OperationResultBase RemoteRename(
-            Session session,
-            string oldRemotePath,
-            string localPath,
-            string remotePath,
-            bool isDirectory,
-            TransferOptions options)
-        {
-            if (isDirectory)
-            {
-                if (session.FileExists(remotePath))
-                {
-                    Console.WriteLine("Remove existing directory {0}", remotePath);
-                    var result = session.RemoveFiles(remotePath);
-                    if (!result.IsSuccess)
-                    {
-                        return result;
-                    }
-                }
-            }
-
-            if (session.FileExists(oldRemotePath))
-            {
-                session.MoveFile(oldRemotePath, remotePath);
-                Console.WriteLine("Rename from {0} to {1}", oldRemotePath, remotePath);
-            }
-            else
-            {
-                Console.WriteLine("Perverting rename to update of {0}", remotePath);
-                RemoteUpdateRecursive(session, localPath, remotePath, isDirectory, options);
-            }
-
-            return null;
-        }
-
-        private static OperationResultBase PropagateChanges(
-            Session session,
-            TransferOptions options,
-            FileSystemEventArgs ev)
-        {
-            bool isDirectory = Utils.IsDirectory(ev.FullPath);
-            if (ev.ChangeType == Changes.Deleted && File.Exists(ev.FullPath))
-            {
-                ev = new FileSystemEventArgs(Changes.Changed, LocalRoot, ev.Name);
-                Console.WriteLine("Perverting deletion to update {0}", ev.FullPath);
-            }
-            else if (ev.ChangeType != Changes.Deleted)
-            {
-                if (isDirectory && !Directory.Exists(ev.FullPath) || !isDirectory && !File.Exists(ev.FullPath))
-                {
-                    Console.WriteLine("Skip update nonexisting {0} of file {1}", ev.ChangeType, ev.FullPath);
-                    return null;
-                }
-            }
-
-            string remotePath = AsRemotePath(session, ev.FullPath);
-            Console.WriteLine("Propagating event: {0} {1}", ev.ChangeType, ev.FullPath);
-            switch (ev.ChangeType)
-            {
-                case Changes.Changed:
-                case Changes.Created:
-                    return RemoteUpdateRecursive(session, ev.FullPath, remotePath, isDirectory, options);
-
-                case Changes.Deleted:
-                    return RemoteDelete(session, remotePath);
-
-                case Changes.Renamed:
-                    {
-                        var rev = (RenamedEventArgs)ev;
-                        string oldRemotePath = AsRemotePath(session, rev.OldFullPath);
-                        return RemoteRename(session, oldRemotePath, rev.FullPath, remotePath,
-                            isDirectory, options);
-                    }
-
-                default:
-                    return null;
-            }
-        }
-
-        private static EventPool PreprocessEvents(EventPool events)
-        {
-            // UU* -> U
-            // RU  -> U
-            // todo do it in stream
-            EventPool result = new EventPool();
-            for (var i = 0; i < events.Count; ++i)
-            {
-                if (i == events.Count - 1)
-                {
-                    result.Add(events[i]);
-                    continue;
-                }
-
-                var cur = events[i];
-                var next = events[i + 1];
-                if (cur.FullPath != next.FullPath)
-                {
-                    result.Add(cur);
-                    continue;
-                }
-
-                if (cur.ChangeType == next.ChangeType) {
-                    Console.WriteLine("Skip same action {0} of {1}", cur.ChangeType, cur.FullPath);
-                    continue;
-                }
-
-                if (next.ChangeType == Changes.Deleted)
-                {
-                    Console.WriteLine("Skip change for next deletion {0}", cur.FullPath);
-                    continue;
-                }
-
-                if (
-                    cur.ChangeType == Changes.Deleted
-                    && (next.ChangeType == Changes.Changed || next.ChangeType == Changes.Created)
-                )
-                {
-                    Console.WriteLine("Skip deletion for next change {0}", cur.FullPath);
-                    continue;
-                }
-
-                result.Add(cur);
-            }
-
-            return result;
-        }
-
-
     }
 }
