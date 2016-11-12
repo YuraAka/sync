@@ -55,15 +55,15 @@ namespace sync
         }
     };
 
-    class EventMonitor {
+    class ChangesMonitor {
         private EventPool Events = new EventPool();
         private Timer Quantifier;
         private FileSystemWatcher FileMonitor;
         private Logger Log;
-        private string Path;
 
-        public EventMonitor(string path, Logger log) {
-            Path = path;
+        public string SourcePath { get; set; }
+
+        public ChangesMonitor(Logger log) {
             Log = log;
             Quantifier = new Timer() {
                 AutoReset = false,
@@ -74,7 +74,7 @@ namespace sync
 
             FileMonitor = new FileSystemWatcher
             {
-                Path = path,
+                Path = SourcePath,
                 IncludeSubdirectories = true,
                 NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.DirectoryName,
                 InternalBufferSize = 64 * 1024
@@ -144,7 +144,7 @@ namespace sync
                 RenamedEventArgs re = (RenamedEventArgs)ev;
                 if (re.OldFullPath.Contains("~"))
                 {
-                    ev = new FileSystemEventArgs(Changes.Changed, Path, re.Name);
+                    ev = new FileSystemEventArgs(Changes.Changed, SourcePath, re.Name);
                     Log.Debug("IN: Refactor rename to update: {0}", ev.FullPath);
                 }
             }
@@ -250,71 +250,170 @@ namespace sync
         }
     };
 
+    class ChangesTransmitter {
+        Session Session = new Session();
+        Logger Log;
+        static EventPool WriteBackChanges = new EventPool();
+
+        string SourcePath { set; get; }
+
+        public string Host { set; get; }
+        public string User { set; get; }
+        public string PrivateKey { set; get; }
+        public string Passphrase { set; get; }
+
+        public string DestinationPath { set; get; }
+
+        public TimeSpan Timeout { set; get; } = TimeSpan.FromSeconds(5);
+
+        public ChangesTransmitter(Logger log) {
+            Log = log;
+            Session.ReconnectTime = TimeSpan.MaxValue;
+        }
+
+        public void WaitChanges(ChangesMonitor source) {
+            SourcePath = source.SourcePath;
+            var sessionOptions = new SessionOptions {
+                HostName = Host,
+                UserName = User,
+                SshPrivateKeyPath = PrivateKey,
+                PrivateKeyPassphrase = Passphrase
+            };
+
+            var transferOptions = new TransferOptions {
+                TransferMode = TransferMode.Binary,
+                ResumeSupport = new TransferResumeSupport {
+                    State = TransferResumeSupportState.Smart,
+                    Threshold = 1024
+                }
+            };
+
+            Session.Timeout = Timeout;
+            while (true) {
+                try {
+                    if (sessionOptions.SshHostKeyFingerprint.Length == 0) {
+                        sessionOptions.SshHostKeyFingerprint = Session.ScanFingerprint(sessionOptions);
+                    }
+
+                    WaitChangesUntilError(source, sessionOptions, transferOptions);
+                } catch (SessionRemoteException err) {
+                    Console.WriteLine("ERROR: Remote failure: {0}", err);
+                    CloseSession();
+                    continue;
+                } catch (TimeoutException) {
+                    Console.WriteLine("ERROR: Session timeout. Retryng to connect...");
+                    CloseSession();
+                    continue;
+                }
+                /// todo remove first event and retry
+            }
+        }
+
+        private void WaitChangesUntilError(
+            ChangesMonitor source,
+            SessionOptions sessionOptions,
+            TransferOptions transferOptions
+        ) {
+            Session.Open(sessionOptions);
+            Console.WriteLine("Ready to transmit changes.");
+
+            while (true) {
+                var changes = source.Wait();
+                /// ...
+            }
+            //SyncChanges(session, monitor);
+        }
+
+        private void CloseSession()
+        {
+            if (Session.Opened)
+            {
+                Session.Close();
+            }
+        }
+
+        private string AsRemotePath(string path) {
+            return Session.TranslateLocalPathToRemote(path, SourcePath, DestinationPath);
+        }
+
+        private static void SyncChanges(Session session, ChangesMonitor monitor)
+        {
+            Exception unrecoverableError = null;
+            EventPool writeBackEvents = new EventPool();
+            while (true)
+            {
+                var events = monitor.Wait();
+                events = PreprocessEvents(events);
+                Console.WriteLine("Propagating {0} events", events.Count);
+                foreach (var ev in events)
+                {
+                    if (unrecoverableError != null)
+                    {
+                        writeBackEvents.Add(ev);
+                        continue;
+                    }
+
+                    OperationResultBase result = null;
+                    try
+                    {
+                        result = PropagateChanges(session, transferOptions, ev);
+                    }
+                    catch (SessionRemoteException err)
+                    {
+                        Console.WriteLine("ERROR: {0}", err);
+                    }
+                    catch (Exception err)
+                    {
+                        Console.WriteLine("FAILURE: {0}. \nContinue collecting events...", err);
+                        unrecoverableError = err;
+                        writeBackEvents.Add(ev);
+                        continue;
+                    }
+
+                    if (result != null && !result.IsSuccess)
+                    {
+                        foreach (var fail in result.Failures)
+                        {
+                            Console.WriteLine("ERROR: {0}", fail);
+                        }
+                    }
+                }
+
+                if (unrecoverableError != null)
+                {
+                    lock (WriteBackChanges)
+                    {
+                        foreach (var ev in writeBackEvents)
+                        {
+                            WriteBackChanges.Add(ev);
+                        }
+                    }
+
+                    throw unrecoverableError;
+                }
+            }
+        }
+    }
+
     class Program
     {
         private static EventPool Events
             = new EventPool();
 
-        private static Timer EventTimer = new Timer(100);
-
-        private static string RemoteRoot = "/home/yuraaka/blue/"; //"/home/yuraaka/sync-test/"; //
-        private static string LocalRoot = @"C:\dev\blue\arc\"; //@"C:\sync-test";
-
-        static void Main(string[] args)
-        {
+        static void Main(string[] args) {
             Logger logger = new Logger();
-            EventMonitor monitor = new EventMonitor(LocalRoot, logger);
-
-            // Setup session options
-            SessionOptions sessionOptions = new SessionOptions
-            {
-                Protocol = Protocol.Sftp,
-                HostName = "bfg9000.yandex.ru",
-                UserName = "yuraaka",
-                SshPrivateKeyPath = @"C:\ssh\id_rsa.ppk",
-                SshHostKeyFingerprint = "ssh-ed25519 256 76:7f:2d:3f:3b:63:17:1e:5d:87:74:47:40:cf:33:8f"
+            ChangesMonitor monitor = new ChangesMonitor(logger) {
+                SourcePath = @"C:\dev\blue\arc\"
             };
 
-            using (Session session = new Session())
-            {
-                // Connect
-                session.ReconnectTime = TimeSpan.MaxValue;
-                session.Timeout = TimeSpan.FromSeconds(5);
-                while (true)
-                {
-                    try
-                    {
-                        session.Open(sessionOptions);
-                        Console.WriteLine("Ready to transmit changes.");
-                        SyncChanges(session, monitor);
-                    }
-                    catch (SessionRemoteException err)
-                    {
-                        Console.WriteLine("ERROR: Remote failure: {0}", err);
-                        ReopenSession(session);
-                        continue;
-                    }
-                    catch (TimeoutException)
-                    {
-                        Console.WriteLine("ERROR: Session timeout. Retryng to connect...");
-                        ReopenSession(session);
-                        continue;
-                    }
-                }
-            }
-        }
+            ChangesTransmitter transmitter = new ChangesTransmitter(logger) {
+                Host = "bfg9000.yandex.ru",
+                User = "yuraaka",
+                PrivateKey = @"C:\ssh\id_rsa.ppk",
+                DestinationPath = "/home/yuraaka/blue/"
+            };
 
-        private static void ReopenSession(Session session)
-        {
-            if (session.Opened)
-            {
-                session.Close();
-            }
-        }
-
-        private static string AsRemotePath(Session session, string path)
-        {
-            return session.TranslateLocalPathToRemote(path, LocalRoot, RemoteRoot);
+            transmitter.WaitChanges(monitor);
         }
 
         private static OperationResultBase RemoteUpdateRecursive(
@@ -516,72 +615,6 @@ namespace sync
             return result;
         }
 
-        private static void SyncChanges(Session session, EventMonitor monitor)
-        {
-            TransferOptions transferOptions = new TransferOptions
-            {
-                TransferMode = TransferMode.Binary,
-                ResumeSupport = new TransferResumeSupport
-                {
-                    State = TransferResumeSupportState.Smart,
-                    Threshold = 1024
-                }
-            };
 
-            Exception unrecoverableError = null;
-            EventPool writeBackEvents = new EventPool();
-            while (true)
-            {
-                var events = monitor.Wait();
-                events = PreprocessEvents(events);
-                Console.WriteLine("Propagating {0} events", events.Count);
-                foreach (var ev in events)
-                {
-                    if (unrecoverableError != null)
-                    {
-                        writeBackEvents.Add(ev);
-                        continue;
-                    }
-
-                    OperationResultBase result = null;
-                    try
-                    {
-                        result = PropagateChanges(session, transferOptions, ev);
-                    }
-                    catch (SessionRemoteException err)
-                    {
-                        Console.WriteLine("ERROR: {0}", err);
-                    }
-                    catch (Exception err)
-                    {
-                        Console.WriteLine("FAILURE: {0}. \nContinue collecting events...", err);
-                        unrecoverableError = err;
-                        writeBackEvents.Add(ev);
-                        continue;
-                    }
-
-                    if (result != null && !result.IsSuccess)
-                    {
-                        foreach (var fail in result.Failures)
-                        {
-                            Console.WriteLine("ERROR: {0}", fail);
-                        }
-                    }
-                }
-
-                if (unrecoverableError != null)
-                {
-                    lock (Events)
-                    {
-                        foreach (var ev in writeBackEvents)
-                        {
-                            Events.Add(ev);
-                        }
-                    }
-
-                    throw unrecoverableError;
-                }
-            }
-        }
     }
 }
