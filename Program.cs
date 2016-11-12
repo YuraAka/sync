@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Reflection;
 using System.Diagnostics;
+using System.Security;
 using WinSCP;
 using NDesk.Options;
 
@@ -14,7 +15,7 @@ using NDesk.Options;
 /// gui
 ///
 
-namespace Sync {
+namespace YSync {
     using EventPool = List<FileSystemEventArgs>;
     using Timer = System.Timers.Timer;
     using Changes = WatcherChangeTypes;
@@ -53,37 +54,66 @@ namespace Sync {
         void Error(string format, params object[] arg);
     };
 
-    class EventLogger : ILogger {
-        private EventLog Log;
-        public int Verbosity { get; set; }
-
-        public EventLogger() {
-            if (!EventLog.SourceExists("YSync")) {
-                EventLog.CreateEventSource("YSync", "YSync");
-                Console.WriteLine("Restart app to use Event log");
-            } else {
-                Log = new EventLog("YSync");
-            }
-        }
+    class CompoundLogger : ILogger {
+        public ILogger[] Logs { get; set; }
 
         public virtual void Debug(string format, params object[] arg) {
-            if (Verbosity >= 2) {
-                Log.WriteEntry(String.Format(format, arg), EventLogEntryType.Information, 100, 1);
+            foreach (var log in Logs) {
+                log.Debug(format, arg);
             }
         }
 
         public virtual void Info(string format, params object[] arg) {
-            if (Verbosity >= 1) {
-                Console.WriteLine("INF: " + format, arg);
+            foreach (var log in Logs) {
+                log.Info(format, arg);
             }
         }
 
         public virtual void Error(string format, params object[] arg) {
-            Console.WriteLine("ERR: " + format, arg);
+            foreach (var log in Logs) {
+                log.Error(format, arg);
+            }
         }
     }
+
+    class EventLogger : ILogger {
+        private EventLog Log;
+
+        public EventLogger() {
+            try {
+                if (!EventLog.SourceExists("YSync")) {
+                    EventLog.CreateEventSource("YSync", "YSync");
+                }
+
+                Log = new EventLog("YSync") {
+                    Source = "YSync"
+                };
+            } catch (SecurityException) {
+                Console.WriteLine("ERR: Cannot create event log. Please, run once with administrative priviledges.");
+            }
+        }
+
+        public virtual void Debug(string format, params object[] arg) {
+            if (Log != null) {
+                Log.WriteEntry(String.Format(format, arg), EventLogEntryType.Information, 300, 3);
+            }
+        }
+
+        public virtual void Info(string format, params object[] arg) {
+            if (Log != null) {
+                Log.WriteEntry(String.Format(format, arg), EventLogEntryType.Information, 200, 2);
+            }
+        }
+
+        public virtual void Error(string format, params object[] arg) {
+            if (Log != null) {
+                Log.WriteEntry(String.Format(format, arg), EventLogEntryType.Error, 100, 1);
+            }
+        }
+    }
+
     class ConsoleLogger : ILogger {
-        public int Verbosity { get; set; }
+        public int Verbosity { get; set; } = 0;
 
         public virtual void Debug(string format, params object[] arg) {
             if (Verbosity >= 2) {
@@ -624,8 +654,13 @@ namespace Sync {
                 return;
             }
 
-            ILogger logger = new ConsoleLogger() {
-                Verbosity = Verbosity
+            ILogger logger = new CompoundLogger() {
+                Logs = new ILogger[] {
+                    new EventLogger(),
+                    new ConsoleLogger() {
+                        Verbosity = Verbosity
+                    }
+                }
             };
 
             ChangesMonitor monitor = new ChangesMonitor(logger) {
@@ -697,7 +732,7 @@ namespace Sync {
         }
 
         static void ShowHelp(OptionSet opts) {
-            Console.WriteLine("Usage: sync.exe [OPTIONS]");
+            Console.WriteLine("Usage: ysync.exe [OPTIONS]");
             Console.WriteLine("Options:");
             opts.WriteOptionDescriptions(Console.Out);
         }
