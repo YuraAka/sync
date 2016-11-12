@@ -410,11 +410,17 @@ namespace YSync {
                 return;
             }
 
-            Assembly executingAssembly = Assembly.GetExecutingAssembly();
-            string resourceName = executingAssembly.GetName().Name + "." + "WinSCP.exe";
-            using (Stream resource = Assembly.GetExecutingAssembly().GetManifestResourceStream(resourceName))
-            using (Stream file = new FileStream(executablePath, FileMode.Create, FileAccess.Write)) {
-                resource.CopyTo(file);
+            try {
+                Assembly executingAssembly = Assembly.GetExecutingAssembly();
+                /// todo: potential bug here: we must use namespace name, not assembly name
+                string resourceName = executingAssembly.GetName().Name + "." + "WinSCP.exe";
+                using (Stream resource = executingAssembly.GetManifestResourceStream(resourceName))
+                using (Stream file = new FileStream(executablePath, FileMode.Create, FileAccess.Write)) {
+                    resource.CopyTo(file);
+                }
+            } catch (Exception) {
+                File.Delete(executablePath);
+                throw;
             }
 
             Log.Debug("Unpack winscp {0}", executablePath);
