@@ -3,9 +3,10 @@ using System.IO;
 using System.Collections.Generic;
 using System.Threading;
 using WinSCP;
+using NDesk.Options;
 
 /// TODO
-/// exception handling
+/// arg parse
 /// event log
 /// user params from registry
 /// detect and run batch load
@@ -42,13 +43,19 @@ namespace sync {
     }
 
     class Logger {
+        public int Verbosity { get; set; }
+
         public void Debug(string format, params object[] arg) {
-            Console.WriteLine("DBG: " + format, arg);
+            if (Verbosity >= 2) {
+                Console.WriteLine("DBG: " + format, arg);
+            }
         }
 
         public void Info(string format, params object[] arg)
         {
-            Console.WriteLine("INF: " + format, arg);
+            if (Verbosity >= 1) {
+                Console.WriteLine("INF: " + format, arg);
+            }
         }
 
         public void Error(string format, params object[] arg)
@@ -545,21 +552,94 @@ namespace sync {
 
     class FileChangesSync
     {
+        static string User;
+        static string SourcePath;
+        static string DestinationPath;
+        static string Host;
+        static string PrivateKey;
+        static int Verbosity = 0;
+
         static void Main(string[] args) {
-            Logger logger = new Logger();
+            if (!ParseArgs(args)) {
+                return;
+            }
+
+            Logger logger = new Logger() {
+                Verbosity = Verbosity
+            };
+
             ChangesMonitor monitor = new ChangesMonitor(logger) {
-                SourcePath = @"C:\dev\blue\arc\"
+                SourcePath = SourcePath
             };
 
             ChangesTransmitter transmitter = new ChangesTransmitter(logger) {
-                Host = "bfg9000.yandex.ru",
-                User = "yuraaka",
-                PrivateKey = @"C:\ssh\id_rsa.ppk",
-                DestinationPath = "/home/yuraaka/blue/"
+                Host = Host,
+                User = User,
+                PrivateKey = PrivateKey,
+                DestinationPath = DestinationPath
             };
 
             monitor.TurnOn();
             transmitter.WaitChanges(monitor);
+        }
+
+        static bool ParseArgs(string[] args) {
+            bool help = false;
+            var opts = new OptionSet() {
+                { "u|user=", "user name", v => User = v },
+                { "s|src=", "source path", v => SourcePath = v },
+                { "d|dst=", "destination path in remote host", v => DestinationPath = v },
+                { "x|host=", "remote host", v => Host = v },
+                { "k|key=", "path to private key", v => PrivateKey = v },
+                { "v", "verbosity level 1", v => Verbosity = 1 },
+                { "V", "verbosity level 2", v => Verbosity = 2 },
+                { "h|help",  "show this message and exit", v => help = v != null },
+            };
+
+            opts.Parse(args);
+            if (help) {
+                ShowHelp(opts);
+                return false;
+            }
+
+            bool unsuficientArgs = false;
+            if (User == null) {
+                Console.WriteLine("ERROR: User is not set");
+                unsuficientArgs = true;
+            }
+
+            if (SourcePath == null) {
+                Console.WriteLine("ERROR: Source path is not set");
+                unsuficientArgs = true;
+            }
+
+            if (DestinationPath == null) {
+                Console.WriteLine("ERROR: Destination path is not set");
+                unsuficientArgs = true;
+            }
+
+            if (Host == null) {
+                Console.WriteLine("ERROR: Host is not set");
+                unsuficientArgs = true;
+            }
+
+            if (PrivateKey == null) {
+                Console.WriteLine("ERROR: Path to private key is not set");
+                unsuficientArgs = true;
+            }
+
+            if (unsuficientArgs) {
+                ShowHelp(opts);
+                return false;
+            }
+
+            return true;
+        }
+
+        static void ShowHelp(OptionSet opts) {
+            Console.WriteLine("Usage: sync.exe [OPTIONS]");
+            Console.WriteLine("Options:");
+            opts.WriteOptionDescriptions(Console.Out);
         }
     }
 }
