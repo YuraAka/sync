@@ -10,7 +10,6 @@ using NDesk.Options;
 
 /// TODO
 /// detect and run batch load
-/// event log
 /// user params from registry
 /// gui
 ///
@@ -351,7 +350,7 @@ namespace YSync {
                     Log.Error("Session timeout. Retryng to connect...");
                     CloseSession();
                 } catch (Exception err) {
-                    Log.Error("UNKNOWN EXCEPTION: {0}, {1}. Yury, you MUST fix it!", err, err.StackTrace);
+                    Log.Error("UNKNOWN EXCEPTION: {0}. Yury, you MUST fix it!", err);
 
                     if (LostLifeChanges.Count > 0) {
                         var first = LostLifeChanges[0];
