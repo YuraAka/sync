@@ -22,31 +22,24 @@ namespace YSync {
     using TransmitResult = OperationResultBase;
 
     class Utils {
-        public static bool IsDirectory(string path)
-        {
+        public static bool IsDirectory(string path) {
             var attrs = TryAttrs(path);
             return attrs.HasValue
                 && (attrs.Value & FileAttributes.Directory) == FileAttributes.Directory;
         }
 
         private static FileAttributes? TryAttrs(string path) {
-            try
-            {
+            try {
                 return File.GetAttributes(path);
-            }
-            catch (DirectoryNotFoundException)
-            {
+            } catch (DirectoryNotFoundException) {
                 return null;
-            }
-            catch (FileNotFoundException)
-            {
+            } catch (FileNotFoundException) {
                 return null;
             }
         }
     }
 
     interface ILogger {
-
         void Debug(string format, params object[] arg);
 
         void Info(string format, params object[] arg);
@@ -121,15 +114,13 @@ namespace YSync {
             }
         }
 
-        public virtual void Info(string format, params object[] arg)
-        {
+        public virtual void Info(string format, params object[] arg) {
             if (Verbosity >= 1) {
                 Console.WriteLine("INF: " + format, arg);
             }
         }
 
-        public virtual void Error(string format, params object[] arg)
-        {
+        public virtual void Error(string format, params object[] arg) {
             Console.WriteLine("ERR: " + format, arg);
         }
     };
@@ -160,8 +151,7 @@ namespace YSync {
         public EventPool Wait() {
             EventPool result;
             lock (Events) {
-                if (Events.Count == 0)
-                {
+                if (Events.Count == 0) {
                     Log.Info("Waiting for changes...");
                     Monitor.Wait(Events);
                 }
@@ -191,10 +181,8 @@ namespace YSync {
 
         private void Flush(Object source, System.Timers.ElapsedEventArgs ev) {
             Log.Debug("Timer signals");
-            lock (Events)
-            {
-                if (Events.Count > 0)
-                {
+            lock (Events) {
+                if (Events.Count > 0) {
                     Monitor.Pulse(Events);
                 }
             }
@@ -224,11 +212,9 @@ namespace YSync {
         }
 
         private FileSystemEventArgs Transform(FileSystemEventArgs ev) {
-            if (ev.ChangeType == Changes.Renamed)
-            {
+            if (ev.ChangeType == Changes.Renamed) {
                 RenamedEventArgs re = (RenamedEventArgs)ev;
-                if (re.OldFullPath.Contains("~"))
-                {
+                if (re.OldFullPath.Contains("~")) {
                     ev = new FileSystemEventArgs(Changes.Changed, SourcePath, re.Name);
                     Log.Debug("IN: Refactor rename to update: {0}", ev.FullPath);
                 }
@@ -238,23 +224,19 @@ namespace YSync {
         }
 
         private bool TrySkip(FileSystemEventArgs ev) {
-            if (ev.FullPath.Contains("~"))
-            {
+            if (ev.FullPath.Contains("~")) {
                 Log.Debug("IN: Skip tilda: {0}", ev.FullPath);
                 return true;
             }
 
             /// todo regexp
-            if (ev.FullPath.Contains(".svn"))
-            {
+            if (ev.FullPath.Contains(".svn")) {
                 Log.Debug("IN: Skip exclusion: {0}", ev.FullPath);
                 return true;
             }
 
-            if (ev.ChangeType == Changes.Changed)
-            {
-                if (Utils.IsDirectory(ev.FullPath))
-                {
+            if (ev.ChangeType == Changes.Changed) {
+                if (Utils.IsDirectory(ev.FullPath)) {
                     Log.Debug("IN: Skip directory update: {0}", ev.FullPath);
                     return true;
                 }
@@ -264,16 +246,14 @@ namespace YSync {
         }
 
         private bool TryCommitNew(FileSystemEventArgs ev) {
-            if (Events.Count == 0)
-            {
+            if (Events.Count == 0) {
                 Log.Debug("IN: Add first event: {0}", ev.FullPath);
                 LogEventsNoLock();
                 return true;
             }
 
             var last = Events[Events.Count - 1];
-            if (last.FullPath != ev.FullPath)
-            {
+            if (last.FullPath != ev.FullPath) {
                 Log.Debug("IN: Add different events: {0} => {1}", last.FullPath, ev.FullPath);
                 LogEventsNoLock();
                 return true;
@@ -286,8 +266,7 @@ namespace YSync {
             bool applied = false;
             var curIdx = Events.Count - 1;
             var prevIdx = Events.Count - 2;
-            while (Events.Count > 1 && Events[prevIdx].FullPath == Events[curIdx].FullPath)
-            {
+            while (Events.Count > 1 && Events[prevIdx].FullPath == Events[curIdx].FullPath) {
                 var prev = Events[prevIdx];
                 var cur = Events[curIdx];
                 if (prev.ChangeType == cur.ChangeType) {
@@ -321,12 +300,10 @@ namespace YSync {
             return applied;
         }
 
-        private void LogEventsNoLock()
-        {
+        private void LogEventsNoLock() {
             var stream = new StringWriter();
             stream.Write("Events: ");
-            foreach (var ev in Events)
-            {
+            foreach (var ev in Events) {
                 stream.Write(ev.ChangeType.ToString()[0]);
             }
 
@@ -345,9 +322,7 @@ namespace YSync {
         public string User { set; get; }
         public string PrivateKey { set; get; }
         public string Passphrase { set; get; }
-
         public string DestinationPath { set; get; }
-
         public TimeSpan Timeout { set; get; } = TimeSpan.FromSeconds(5);
 
         public ChangesTransmitter(ILogger log) {
@@ -390,13 +365,11 @@ namespace YSync {
         }
 
         private void OpenSession(SessionOptions options) {
-            if (options.SshHostKeyFingerprint == null)
-            {
+            if (options.SshHostKeyFingerprint == null) {
                 options.SshHostKeyFingerprint = Session.ScanFingerprint(options);
             }
 
-            if (!Session.Opened)
-            {
+            if (!Session.Opened) {
                 Session.Open(options);
                 Log.Info("Ready to transmit changes.");
             }
@@ -439,8 +412,7 @@ namespace YSync {
         private TransferOptions CreateTransferOptions() {
             return new TransferOptions {
                 TransferMode = TransferMode.Binary,
-                ResumeSupport = new TransferResumeSupport
-                {
+                ResumeSupport = new TransferResumeSupport {
                     State = TransferResumeSupportState.Smart,
                     Threshold = 4*1024
                 }
@@ -620,10 +592,8 @@ namespace YSync {
             return change;
         }
 
-        private EventPool RetrieveChanges(ChangesMonitor source)
-        {
-            if (LostLifeChanges.Count == 0)
-            {
+        private EventPool RetrieveChanges(ChangesMonitor source) {
+            if (LostLifeChanges.Count == 0) {
                 return source.Wait();
             }
 
@@ -633,10 +603,8 @@ namespace YSync {
             return changes;
         }
 
-        private void CloseSession()
-        {
-            if (Session.Opened)
-            {
+        private void CloseSession() {
+            if (Session.Opened) {
                 Session.Close();
             }
         }
@@ -646,8 +614,7 @@ namespace YSync {
         }
     }
 
-    class FileChangesSync
-    {
+    class FileChangesSync {
         static string User;
         static string SourcePath;
         static string DestinationPath;
