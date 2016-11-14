@@ -349,6 +349,9 @@ namespace YSync {
                 } catch (TimeoutException) {
                     Log.Error("Session timeout. Retryng to connect...");
                     CloseSession();
+                } catch (InvalidOperationException err) {
+                    Log.Error("Remote failure: {0}", err);
+                    CloseSession();
                 } catch (Exception err) {
                     Log.Error("UNKNOWN EXCEPTION: {0}. Yury, you MUST fix it!", err);
 
