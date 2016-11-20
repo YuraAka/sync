@@ -9,6 +9,7 @@ using WinSCP;
 using NDesk.Options;
 
 /// TODO
+/// fold multiple same errors
 /// detect and run batch load
 /// user params from registry
 /// gui

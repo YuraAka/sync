@@ -63,6 +63,26 @@ namespace gui.Properties {
         /// <summary>
         ///   Looks up a localized resource of type System.Drawing.Icon similar to (Icon).
         /// </summary>
+        internal static System.Drawing.Icon active {
+            get {
+                object obj = ResourceManager.GetObject("active", resourceCulture);
+                return ((System.Drawing.Icon)(obj));
+            }
+        }
+        
+        /// <summary>
+        ///   Looks up a localized resource of type System.Drawing.Icon similar to (Icon).
+        /// </summary>
+        internal static System.Drawing.Icon disabled {
+            get {
+                object obj = ResourceManager.GetObject("disabled", resourceCulture);
+                return ((System.Drawing.Icon)(obj));
+            }
+        }
+        
+        /// <summary>
+        ///   Looks up a localized resource of type System.Drawing.Icon similar to (Icon).
+        /// </summary>
         internal static System.Drawing.Icon route {
             get {
                 object obj = ResourceManager.GetObject("route", resourceCulture);
@@ -71,11 +91,21 @@ namespace gui.Properties {
         }
         
         /// <summary>
+        ///   Looks up a localized resource of type System.Byte[].
+        /// </summary>
+        internal static byte[] WinSCP {
+            get {
+                object obj = ResourceManager.GetObject("WinSCP", resourceCulture);
+                return ((byte[])(obj));
+            }
+        }
+        
+        /// <summary>
         ///   Looks up a localized resource of type System.Drawing.Icon similar to (Icon).
         /// </summary>
-        internal static System.Drawing.Icon route64x64 {
+        internal static System.Drawing.Icon working {
             get {
-                object obj = ResourceManager.GetObject("route64x64", resourceCulture);
+                object obj = ResourceManager.GetObject("working", resourceCulture);
                 return ((System.Drawing.Icon)(obj));
             }
         }
