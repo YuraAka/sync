@@ -10,28 +10,46 @@ using System.Drawing.Design;
 /// - bad font
 /// - fill settings
 /// - change icon color
-/// tabstops
-/// icons
-/// почему не обрабатывает копирования и удаления
+/// - tabstops
+/// - icons
+/// - мгновенный стоп: прерывать загрузку файла
 /// </summary>
 namespace gui {
-    public class Settings {
-        public string User { get; set; }
+    public class SettingsFrontend {
+        private Settings Backend = new Settings();
+
+        public void Save() {
+            Backend.Save();
+        }
+
+        public string User {
+            get { return Backend.User; }
+            set { Backend.User = value; }
+        }
 
         [DisplayName("Private key path")]
-        [EditorAttribute(
-            typeof(System.Windows.Forms.Design.FileNameEditor),
-            typeof(System.Drawing.Design.UITypeEditor))
-        ]
-        public string PrivateKey { get; set; }
+        [EditorAttribute(typeof(FileNameEditor), typeof(UITypeEditor))]
+        public string PrivateKey {
+            get { return Backend.PrivateKey; }
+            set { Backend.PrivateKey = value; }
+        }
 
         [DisplayName("Local directory path")]
         [EditorAttribute(typeof(FolderNameEditor), typeof(UITypeEditor))]
-        public string SourcePath { get; set; }
-        public string Host { get; set; }
+        public string SourcePath {
+            get { return Backend.SourcePath; }
+            set { Backend.SourcePath = value;  }
+        }
+        public string Host {
+            get { return Backend.Host; }
+            set { Backend.Host = value; }
+        }
 
         [DisplayName("Remote directory path")]
-        public string DestinationPath { get; set; }
+        public string DestinationPath {
+            get { return Backend.DestinationPath; }
+            set { Backend.DestinationPath = value; }
+        }
     };
 
     public class CustomApplicationContext : ApplicationContext {
@@ -43,7 +61,7 @@ namespace gui {
         private BackgroundWorker SyncWorker;
 
         private SettingsForm SettingsForm;
-        private Settings Settings = new Settings();
+        private SettingsFrontend Settings = new SettingsFrontend();
         private System.ComponentModel.IContainer Components;
         private NotifyIcon TrayIcon;
 
@@ -64,6 +82,7 @@ namespace gui {
         }
 
         private void OnCloseSettings(object sender, EventArgs e) {
+            Settings.Save();
             SettingsForm = null;
         }
 
@@ -92,9 +111,6 @@ namespace gui {
         private void OnContextMenu(object sender, System.ComponentModel.CancelEventArgs e) {
             e.Cancel = false;
 
-            StartItem = CreateItem("Start", OnStart);
-            StopItem = CreateItem("Stop", OnStop, false);
-
             TrayIcon.ContextMenuStrip.Items.Clear();
             TrayIcon.ContextMenuStrip.Items.Add(CreateItem("Settings", OnSettings));
             TrayIcon.ContextMenuStrip.Items.Add(StartItem);
@@ -121,6 +137,9 @@ namespace gui {
             SyncWorker.ProgressChanged += UpdateProgress;
             SyncWorker.RunWorkerCompleted += CompleteSync;
             Components.Add(SyncWorker);
+
+            StartItem = CreateItem("Start", OnStart);
+            StopItem = CreateItem("Stop", OnStop, false);
         }
 
         private void ChangeIconToStartedFromThread() {
