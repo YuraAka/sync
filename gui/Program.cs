@@ -4,6 +4,7 @@ using System.Drawing;
 using System.ComponentModel;
 using System.Windows.Forms.Design;
 using System.Drawing.Design;
+using System.Threading;
 
 /// <summary>
 /// TODO
@@ -212,12 +213,22 @@ namespace gui {
     }
 
     static class Program {
+        static Mutex mutex = new Mutex(true, "{8F6F0AC4-B9A1-45fd-A8CF-72F04E6BDE8F}");
+
         [STAThread]
         static void Main() {
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            var applicationContext = new CustomApplicationContext();
-            Application.Run(applicationContext);
+            if (mutex.WaitOne(TimeSpan.Zero, true)) {
+                try {
+                    Application.EnableVisualStyles();
+                    Application.SetCompatibleTextRenderingDefault(false);
+                    var applicationContext = new CustomApplicationContext();
+                    Application.Run(applicationContext);
+                } finally {
+                    mutex.ReleaseMutex();
+                }
+            } else {
+                MessageBox.Show("only one instance at a time");
+            }
         }
     }
 }
