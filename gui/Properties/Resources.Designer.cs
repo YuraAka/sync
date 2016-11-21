@@ -63,9 +63,9 @@ namespace gui.Properties {
         /// <summary>
         ///   Looks up a localized resource of type System.Drawing.Icon similar to (Icon).
         /// </summary>
-        internal static System.Drawing.Icon active {
+        internal static System.Drawing.Icon offline {
             get {
-                object obj = ResourceManager.GetObject("active", resourceCulture);
+                object obj = ResourceManager.GetObject("offline", resourceCulture);
                 return ((System.Drawing.Icon)(obj));
             }
         }
@@ -73,9 +73,9 @@ namespace gui.Properties {
         /// <summary>
         ///   Looks up a localized resource of type System.Drawing.Icon similar to (Icon).
         /// </summary>
-        internal static System.Drawing.Icon disabled {
+        internal static System.Drawing.Icon online {
             get {
-                object obj = ResourceManager.GetObject("disabled", resourceCulture);
+                object obj = ResourceManager.GetObject("online", resourceCulture);
                 return ((System.Drawing.Icon)(obj));
             }
         }
@@ -83,9 +83,9 @@ namespace gui.Properties {
         /// <summary>
         ///   Looks up a localized resource of type System.Drawing.Icon similar to (Icon).
         /// </summary>
-        internal static System.Drawing.Icon route {
+        internal static System.Drawing.Icon onwork {
             get {
-                object obj = ResourceManager.GetObject("route", resourceCulture);
+                object obj = ResourceManager.GetObject("onwork", resourceCulture);
                 return ((System.Drawing.Icon)(obj));
             }
         }
@@ -97,16 +97,6 @@ namespace gui.Properties {
             get {
                 object obj = ResourceManager.GetObject("WinSCP", resourceCulture);
                 return ((byte[])(obj));
-            }
-        }
-        
-        /// <summary>
-        ///   Looks up a localized resource of type System.Drawing.Icon similar to (Icon).
-        /// </summary>
-        internal static System.Drawing.Icon working {
-            get {
-                object obj = ResourceManager.GetObject("working", resourceCulture);
-                return ((System.Drawing.Icon)(obj));
             }
         }
     }

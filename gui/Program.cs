@@ -13,6 +13,7 @@ using System.Drawing.Design;
 /// - tabstops
 /// - icons
 /// - мгновенный стоп: прерывать загрузку файла
+/// - детектировать переподключение и ошибки
 /// </summary>
 namespace gui {
     public class SettingsFrontend {
@@ -53,9 +54,9 @@ namespace gui {
     };
 
     public class CustomApplicationContext : ApplicationContext {
-        private readonly Icon StartedIcon = new Icon("active.ico");
-        private readonly Icon StoppedIcon = new Icon("disabled.ico");
-        private readonly Icon InWorkIcon = new Icon("working.ico");
+        private readonly Icon StartedIcon = new Icon("online.ico");
+        private readonly Icon StoppedIcon = new Icon("offline.ico");
+        private readonly Icon InWorkIcon = new Icon("onwork.ico");
         private ToolStripItem StartItem;
         private ToolStripItem StopItem;
         private BackgroundWorker SyncWorker;
