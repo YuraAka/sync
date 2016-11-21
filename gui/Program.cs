@@ -14,7 +14,7 @@ using System.Threading;
 /// - tabstops
 /// - icons
 /// - мгновенный стоп: прерывать загрузку файла
-/// - детектировать переподключение и ошибки
+/// - progress
 /// </summary>
 namespace gui {
     public class SettingsFrontend {
@@ -129,6 +129,7 @@ namespace gui {
                 Visible = true
             };
             TrayIcon.ContextMenuStrip.Opening += OnContextMenu;
+            TrayIcon.MouseDoubleClick += OnSettings;
 
             SyncWorker = new BackgroundWorker() {
                 WorkerReportsProgress = true,
@@ -184,11 +185,11 @@ namespace gui {
 
             syncronizer.OnChangesProcessed += new Action(ChangeIconToProcessingFromThread);
             syncronizer.OnChangesWait += new Action(ChangeIconToStartedFromThread);
+            syncronizer.OnStop += new Action(ChangeIconToStoppedFromThread);
 
             syncronizer.Start(() => worker.CancellationPending);
             e.Cancel = true;
-            TrayIcon.ContextMenuStrip.Invoke(new Action(ChangeIconToStopped));
-            /// wait when everything is ready
+            ChangeIconToStoppedFromThread();
         }
 
         private void UpdateProgress(object sender, ProgressChangedEventArgs e) {
@@ -227,7 +228,7 @@ namespace gui {
                     mutex.ReleaseMutex();
                 }
             } else {
-                MessageBox.Show("only one instance at a time");
+                MessageBox.Show("Already running.");
             }
         }
     }

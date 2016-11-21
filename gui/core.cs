@@ -12,6 +12,8 @@ namespace Core {
     using Timer = System.Timers.Timer;
     using Changes = WatcherChangeTypes;
     using TransmitResult = OperationResultBase;
+    using System.Threading.Tasks;
+
     public delegate bool Predicate();
 
     class Utils {
@@ -333,11 +335,16 @@ namespace Core {
         public string Passphrase { set; get; }
         public string DestinationPath { set; get; }
         public TimeSpan Timeout { set; get; } = TimeSpan.FromSeconds(5);
+        public event Action OnClose;
 
         public ChangesTransmitter(ILogger log) {
             Log = log;
             Session.ReconnectTime = TimeSpan.MaxValue;
             UnpackWinSCP();
+        }
+
+        public void Stop() {
+            Session.Abort();
         }
 
         public void WaitChanges(ChangesMonitor source, Predicate cancelPoller) {
@@ -360,13 +367,10 @@ namespace Core {
                     }
                 } catch (SessionRemoteException err) {
                     Log.Error("Remote failure: {0}", err);
-                    CloseSession();
                 } catch (TimeoutException) {
                     Log.Error("Session timeout. Retryng to connect...");
-                    CloseSession();
                 } catch (InvalidOperationException err) {
                     Log.Error("Remote failure: {0}", err);
-                    CloseSession();
                 } catch (Exception err) {
                     Log.Error("UNKNOWN EXCEPTION: {0}. Yury, you MUST fix it!", err);
 
@@ -377,6 +381,8 @@ namespace Core {
                     }
 
                     Thread.Sleep(1000);
+                } finally {
+                    CloseSession();
                 }
             }
         }
@@ -626,6 +632,7 @@ namespace Core {
 
         private void CloseSession() {
             if (Session.Opened) {
+                OnClose();
                 Session.Close();
             }
         }
@@ -644,6 +651,7 @@ namespace Core {
 
         public event Action OnChangesProcessed;
         public event Action OnChangesWait;
+        public event Action OnStop;
 
         public void Start(Predicate cancelPoller) {
             ILogger logger = new EventLogger();
@@ -662,8 +670,21 @@ namespace Core {
 
             monitor.OnWait += OnChangesWait;
             monitor.OnChangesCollect += OnChangesProcessed;
+            transmitter.OnClose += OnStop;
 
             monitor.TurnOn();
+
+            var cancelListen = new Task(new Action(() => {
+                while (!cancelPoller()) {
+                    Thread.Sleep(1000);
+                }
+
+                //monitor.TurnOff();
+                transmitter.Stop();
+            }));
+
+            cancelListen.Start();
+
             transmitter.WaitChanges(monitor, cancelPoller);
             logger.Info("Stopping...");
         }
