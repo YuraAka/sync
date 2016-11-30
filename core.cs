@@ -240,9 +240,11 @@ namespace Core {
             }
 
             /// todo regexp
-            if (ev.FullPath.Contains(".svn")) {
-                Log.Debug("IN: Skip exclusion: {0}", ev.FullPath);
-                return true;
+            foreach (var part in ev.FullPath.Split(Path.DirectorySeparatorChar)) {
+                if (part.StartsWith(".")) {
+                    Log.Debug("IN: Skip exclusion: {0}", ev.FullPath);
+                    return true;
+                }
             }
 
             if (ev.ChangeType == Changes.Changed) {
@@ -334,7 +336,7 @@ namespace Core {
         public string PrivateKey { set; get; }
         public string Passphrase { set; get; }
         public string DestinationPath { set; get; }
-        public TimeSpan Timeout { set; get; } = TimeSpan.FromSeconds(5);
+        public TimeSpan Timeout { set; get; } = TimeSpan.FromSeconds(30);
         public event Action OnClose;
 
         public ChangesTransmitter(ILogger log) {
@@ -371,6 +373,8 @@ namespace Core {
                     Log.Error("Session timeout. Retryng to connect...");
                 } catch (InvalidOperationException err) {
                     Log.Error("Remote failure: {0}", err);
+                } catch (SessionLocalException err) {
+                    Log.Error("Local failure: {0}", err);
                 } catch (Exception err) {
                     Log.Error("UNKNOWN EXCEPTION: {0}. Yury, you MUST fix it!", err);
 
@@ -687,6 +691,40 @@ namespace Core {
 
             transmitter.WaitChanges(monitor, cancelPoller);
             logger.Info("Stopping...");
+        }
+    }
+
+    class SimpleFileChangesSync {
+        public string User { get; set; }
+        public string SourcePath { get; set; }
+        public string DestinationPath { get; set; }
+        public string Host { get; set; }
+        public string PrivateKey { get; set; }
+        public int Verbosity { get; set; }
+
+        public void Run() {
+            ILogger logger = new CompoundLogger() {
+                Logs = new ILogger[] {
+                    new EventLogger(),
+                    new ConsoleLogger() {
+                        Verbosity = Verbosity
+                    }
+                }
+            };
+
+            ChangesMonitor monitor = new ChangesMonitor(logger) {
+                SourcePath = SourcePath
+            };
+
+            ChangesTransmitter transmitter = new ChangesTransmitter(logger) {
+                Host = Host,
+                User = User,
+                PrivateKey = PrivateKey,
+                DestinationPath = DestinationPath,
+            };
+
+            monitor.TurnOn();
+            transmitter.WaitChanges(monitor, () => false);
         }
     }
 }
