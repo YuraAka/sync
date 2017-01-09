@@ -15,6 +15,7 @@ using System.Threading;
 /// - icons
 /// - мгновенный стоп: прерывать загрузку файла
 /// - progress
+/// - executable attr transmit
 /// </summary>
 namespace gui {
     public class SettingsFrontend {
