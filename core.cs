@@ -454,6 +454,12 @@ namespace Core {
 
         private void TransferAll(EventPool changes, TransferOptions options) {
             Exception lostLifeError = null;
+            if (changes.Count > 100) {
+                Log.Info("To many changes. Need to fallback to batch method");
+                // TODO: get all changes, convert to tree and separate several biggest subtrees,
+                // then sync only roots with rsync
+            }
+
             foreach (var change in changes) {
                 if (IsCancel()) {
                     return;
