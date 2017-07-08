@@ -82,5 +82,16 @@ namespace gui {
                 this["DestinationPath"] = value;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        public global::System.Collections.Specialized.StringCollection Excludes {
+            get {
+                return ((global::System.Collections.Specialized.StringCollection)(this["Excludes"]));
+            }
+            set {
+                this["Excludes"] = value;
+            }
+        }
     }
 }

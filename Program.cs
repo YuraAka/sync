@@ -3,6 +3,7 @@ using NDesk.Options;
 
 namespace YSync {
     using Core;
+    using System.Collections.Generic;
 
     class FileChangesSync {
         static string User;
@@ -11,6 +12,8 @@ namespace YSync {
         static string Host;
         static string PrivateKey;
         static int Verbosity = 0;
+        static string Excludes = "";
+        static bool DryRun = false;
 
         static void Main(string[] args) {
             if (!ParseArgs(args)) {
@@ -23,7 +26,9 @@ namespace YSync {
                 DestinationPath = DestinationPath,
                 Host = Host,
                 PrivateKey = PrivateKey,
-                Verbosity = Verbosity
+                Verbosity = Verbosity,
+                Excludes = new HashSet<string>(Excludes.Split(',')),
+                DryRun = DryRun
             };
 
             changesSync.Run();
@@ -37,8 +42,10 @@ namespace YSync {
                 { "d|dst=", "destination path in remote host", v => DestinationPath = v },
                 { "x|host=", "remote host", v => Host = v },
                 { "k|key=", "path to private key", v => PrivateKey = v },
+                { "e|exclude=", "comma-separated exclude name list", v => Excludes = v },
                 { "v", "verbosity level 1", v => Verbosity = 1 },
                 { "V", "verbosity level 2", v => Verbosity = 2 },
+                { "dry-run", "fake transfer mode", v => DryRun = true },
                 { "h|help",  "show this message and exit", v => help = v != null },
             };
 

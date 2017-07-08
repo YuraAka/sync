@@ -5,6 +5,10 @@ using System.ComponentModel;
 using System.Windows.Forms.Design;
 using System.Drawing.Design;
 using System.Threading;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Collections.Specialized;
+using System.Linq;
 
 /// <summary>
 /// TODO
@@ -18,6 +22,23 @@ using System.Threading;
 /// - executable attr transmit
 /// </summary>
 namespace gui {
+    public class CsvConverter : TypeConverter {
+        // Overrides the ConvertTo method of TypeConverter.
+        public override object ConvertTo(
+            ITypeDescriptorContext context,
+            CultureInfo culture,
+            object value,
+            Type destinationType
+        ) {
+            var v = value as StringCollection;
+            if (destinationType == typeof(string)) {
+                return String.Join("; ", v.Cast<String>().ToList());
+            }
+
+            return base.ConvertTo(context, culture, value, destinationType);
+        }
+    }
+
     public class SettingsFrontend {
         private Settings Backend = new Settings();
 
@@ -52,6 +73,23 @@ namespace gui {
         public string DestinationPath {
             get { return Backend.DestinationPath; }
             set { Backend.DestinationPath = value; }
+        }
+
+        [DisplayName("Excludes")]
+        [Editor(@"System.Windows.Forms.Design.StringCollectionEditor," +
+        "System.Design, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a",
+        typeof(System.Drawing.Design.UITypeEditor))]
+        [TypeConverter(typeof(CsvConverter))]
+        public StringCollection Excludes {
+            get {
+                if (Backend.Excludes == null) {
+                    Backend.Excludes = new StringCollection();
+                    string[] defaults = { ".svn", ".git", ".vs" };
+                    Backend.Excludes.AddRange(defaults);
+                }
+
+                return Backend.Excludes;
+            }
         }
     };
 
@@ -182,6 +220,7 @@ namespace gui {
                 SourcePath = Settings.SourcePath,
                 DestinationPath = Settings.DestinationPath,
                 PrivateKey = Settings.PrivateKey,
+                Excludes = new HashSet<String>(Settings.Excludes.Cast<String>())
             };
 
             syncronizer.OnChangesProcessed += new Action(ChangeIconToProcessingFromThread);

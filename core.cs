@@ -129,8 +129,9 @@ namespace Core {
         private bool FirstChangeInSeries = false;
 
         public string SourcePath { get; set; }
-        public event Action OnWait;
-        public event Action OnChangesCollect;
+        public HashSet<string> Excludes { get; set; }
+        public event Action OnWait = new Action(() => {});
+        public event Action OnChangesCollect = new Action(() => { });
 
         public ChangesMonitor(ILogger log) {
             Log = log;
@@ -241,7 +242,7 @@ namespace Core {
 
             /// todo regexp
             foreach (var part in ev.FullPath.Split(Path.DirectorySeparatorChar)) {
-                if (part.StartsWith(".")) {
+                if (Excludes.Contains(part)) {
                     Log.Debug("IN: Skip exclusion: {0}", ev.FullPath);
                     return true;
                 }
@@ -336,11 +337,12 @@ namespace Core {
         public string PrivateKey { set; get; }
         public string Passphrase { set; get; }
         public string DestinationPath { set; get; }
+        public bool DryRun { set; get; }
         public TimeSpan Timeout { set; get; } = TimeSpan.FromSeconds(30);
-        public event Action OnSessionClose;
-        public event Action OnSessionOpen;
-        public event Action OnChangesStart;
-        public event Action OnChangesFinish;
+        public event Action OnSessionClose = new Action(() => { });
+        public event Action OnSessionOpen = new Action(() => { });
+        public event Action OnChangesStart = new Action(() => { });
+        public event Action OnChangesFinish = new Action(() => { });
 
         public ChangesTransmitter(ILogger log) {
             Log = log;
@@ -397,6 +399,11 @@ namespace Core {
         }
 
         private void OpenSession(SessionOptions options) {
+            if (DryRun) {
+                Log.Info("Fake session open");
+                return;
+            }
+
             if (options.SshHostKeyFingerprint == null) {
                 options.SshHostKeyFingerprint = Session.ScanFingerprint(options);
             }
@@ -487,6 +494,11 @@ namespace Core {
         }
 
         private void TransferOne(FileSystemEventArgs change, TransferOptions options) {
+            if (DryRun) {
+                Log.Info("Fake transfer " + change.FullPath);
+                return;
+            }
+
             change = Transform(change);
             if (change == null) {
                 return;
@@ -647,6 +659,11 @@ namespace Core {
         }
 
         private void CloseSession() {
+            if (DryRun) {
+                Log.Info("Fake session close");
+                return;
+            }
+
             if (Session.Opened) {
                 OnSessionClose();
                 Session.Close();
@@ -664,10 +681,11 @@ namespace Core {
         public string DestinationPath { get; set; }
         public string Host { get; set; }
         public string PrivateKey { get; set; }
+        public HashSet<string> Excludes { get; set; }
 
-        public event Action OnChangesProcessed;
-        public event Action OnChangesWait;
-        public event Action OnStop;
+        public event Action OnChangesProcessed = new Action(() => { });
+        public event Action OnChangesWait = new Action(() => { });
+        public event Action OnStop = new Action(() => { });
 
         public void Start(Predicate cancelPoller) {
             OnChangesWait();
@@ -676,6 +694,7 @@ namespace Core {
             /// add delegates
             ChangesMonitor monitor = new ChangesMonitor(logger) {
                 SourcePath = SourcePath,
+                Excludes = Excludes,
             };
 
             ChangesTransmitter transmitter = new ChangesTransmitter(logger) {
@@ -714,6 +733,8 @@ namespace Core {
         public string Host { get; set; }
         public string PrivateKey { get; set; }
         public int Verbosity { get; set; }
+        public HashSet<string> Excludes { get; set; }
+        public bool DryRun { get; set; }
 
         public void Run() {
             ILogger logger = new CompoundLogger() {
@@ -726,7 +747,8 @@ namespace Core {
             };
 
             ChangesMonitor monitor = new ChangesMonitor(logger) {
-                SourcePath = SourcePath
+                SourcePath = SourcePath,
+                Excludes = Excludes
             };
 
             ChangesTransmitter transmitter = new ChangesTransmitter(logger) {
@@ -734,6 +756,7 @@ namespace Core {
                 User = User,
                 PrivateKey = PrivateKey,
                 DestinationPath = DestinationPath,
+                DryRun = DryRun,
             };
 
             monitor.TurnOn();
