@@ -337,7 +337,10 @@ namespace Core {
         public string Passphrase { set; get; }
         public string DestinationPath { set; get; }
         public TimeSpan Timeout { set; get; } = TimeSpan.FromSeconds(30);
-        public event Action OnClose;
+        public event Action OnSessionClose;
+        public event Action OnSessionOpen;
+        public event Action OnChangesStart;
+        public event Action OnChangesFinish;
 
         public ChangesTransmitter(ILogger log) {
             Log = log;
@@ -356,16 +359,18 @@ namespace Core {
             Session.Timeout = Timeout;
             IsCancel = cancelPoller;
 
-            while (true) {
+            while (!IsCancel()) {
                 try {
                     OpenSession(sessionOptions);
-                    while (true) {
+                    while (!IsCancel()) {
                         var changes = RetrieveChanges(source);
+                        OnChangesStart();
                         if (changes == null) {
                             return;
                         }
 
                         TransferAll(changes, transferOptions);
+                        OnChangesFinish();
                     }
                 } catch (SessionRemoteException err) {
                     Log.Error("Remote failure: {0}", err);
@@ -398,6 +403,7 @@ namespace Core {
 
             if (!Session.Opened) {
                 Session.Open(options);
+                OnSessionOpen();
                 Log.Info("Ready to transmit changes.");
             }
         }
@@ -636,7 +642,7 @@ namespace Core {
 
         private void CloseSession() {
             if (Session.Opened) {
-                OnClose();
+                OnSessionClose();
                 Session.Close();
             }
         }
@@ -658,6 +664,7 @@ namespace Core {
         public event Action OnStop;
 
         public void Start(Predicate cancelPoller) {
+            OnChangesWait();
             ILogger logger = new EventLogger();
 
             /// add delegates
@@ -672,9 +679,8 @@ namespace Core {
                 DestinationPath = DestinationPath,
             };
 
-            monitor.OnWait += OnChangesWait;
             monitor.OnChangesCollect += OnChangesProcessed;
-            transmitter.OnClose += OnStop;
+            monitor.OnWait += OnChangesWait;
 
             monitor.TurnOn();
 
@@ -690,6 +696,7 @@ namespace Core {
             cancelListen.Start();
 
             transmitter.WaitChanges(monitor, cancelPoller);
+            OnStop();
             logger.Info("Stopping...");
         }
     }
