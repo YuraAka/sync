@@ -220,7 +220,7 @@ namespace gui {
                 SourcePath = Settings.SourcePath,
                 DestinationPath = Settings.DestinationPath,
                 PrivateKey = Settings.PrivateKey,
-                Excludes = new HashSet<String>(Settings.Excludes.Cast<String>())
+                Excludes = new HashSet<String>(Settings.Excludes.Cast<String>()),
             };
 
             syncronizer.OnChangesProcessed += new Action(ChangeIconToProcessingFromThread);

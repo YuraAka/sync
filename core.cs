@@ -32,6 +32,20 @@ namespace Core {
                 return null;
             }
         }
+
+        public static string ToBashPath(string path) {
+            var parts = path.Split(':');
+            return "/mnt/" + parts[0].ToLower() + parts[1].Replace('\\', '/');
+        }
+
+        public static string TryBashExePath() {
+            string path = @"C:\Windows\sysnative\bash.exe";
+            if (File.Exists(path)) {
+                return path;
+            }
+
+            return "";
+        }
     }
 
     interface ILogger {
@@ -330,6 +344,8 @@ namespace Core {
         private ILogger Log;
         private EventPool LostLifeChanges = new EventPool();
         private string SourcePath { set; get; }
+        private string BashSourcePath { set; get; }
+        private string BashExePath { set; get; }
         private Predicate IsCancel;
 
         public string Host { set; get; }
@@ -339,6 +355,7 @@ namespace Core {
         public string DestinationPath { set; get; }
         public bool DryRun { set; get; }
         public TimeSpan Timeout { set; get; } = TimeSpan.FromSeconds(30);
+        public HashSet<string> Excludes { set; get; }
         public event Action OnSessionClose = new Action(() => { });
         public event Action OnSessionOpen = new Action(() => { });
         public event Action OnChangesStart = new Action(() => { });
@@ -356,6 +373,8 @@ namespace Core {
 
         public void WaitChanges(ChangesMonitor source, Predicate cancelPoller) {
             SourcePath = source.SourcePath;
+            BashSourcePath = Utils.ToBashPath(SourcePath);
+            BashExePath = Utils.TryBashExePath();
             var sessionOptions = CreateSessionOptions();
             var transferOptions = CreateTransferOptions();
             Session.Timeout = Timeout;
@@ -459,14 +478,87 @@ namespace Core {
             };
         }
 
-        private void TransferAll(EventPool changes, TransferOptions options) {
-            Exception lostLifeError = null;
-            if (changes.Count > 100) {
-                Log.Info("To many changes. Need to fallback to batch method");
-                // TODO: get all changes, convert to tree and separate several biggest subtrees,
-                // then sync only roots with rsync
+        private bool RunBatchTransfer(string root) {
+            if (BashExePath.Length == 0) {
+                Log.Info("No bash found in system. Load optimization is disabled");
+                return false;
             }
 
+            string localPath = BashSourcePath + "/" + root;
+            string remotePath = string.Format("{0}:{1}", Host, DestinationPath + "/" + root);
+            Process pProcess = new Process();
+            pProcess.StartInfo.FileName = BashExePath;
+            string excludes = "";
+            if (Excludes != null) {
+                foreach (var exclude in Excludes) {
+                    excludes += string.Format("--exclude '{0}' ", exclude);
+                }
+            }
+
+            string cmd = string.Format("-c \"rsync {0} {1} -a {2} --delete -v\"", localPath, remotePath, excludes);
+            pProcess.StartInfo.Arguments = cmd;
+            pProcess.StartInfo.UseShellExecute = false;
+            pProcess.StartInfo.RedirectStandardOutput = true;
+            pProcess.StartInfo.RedirectStandardError = true;
+            pProcess.StartInfo.WindowStyle = ProcessWindowStyle.Hidden;
+            pProcess.StartInfo.CreateNoWindow = true;
+            Log.Info("Rsync run: {0} {1}", pProcess.StartInfo.FileName, pProcess.StartInfo.Arguments);
+            if (!DryRun) {
+                /// TODO support cancelation: kill in another thread
+                pProcess.Start();
+                pProcess.WaitForExit();
+                Log.Debug("Rsync stdout: {0}", pProcess.StandardOutput.ReadToEnd());
+                Log.Debug("Rsync stderr: {0}", pProcess.StandardError.ReadToEnd());
+            }
+
+            return true;
+        }
+
+        private HashSet<string> GetChangedRoots(EventPool changes) {
+            // TODO: get all changes, convert to tree and separate several biggest subtrees,
+            // then sync only roots with rsync
+
+            var result = new HashSet<string>();
+            foreach (var change in changes) {
+                var relativePath = change.FullPath.Substring(SourcePath.Length);
+                var parts = relativePath.Split(
+                    Path.DirectorySeparatorChar.ToString().ToCharArray(),
+                    options: StringSplitOptions.RemoveEmptyEntries
+                );
+
+                var root = parts.Length == 1 ? "" : parts[0] + "/";
+                result.Add(root);
+            }
+
+            return result;
+        }
+
+        private bool TryBatchTransfer(EventPool changes) {
+            // TODO: tune threshold for optimal speed
+            if (changes.Count < 100) {
+                return false;
+            }
+
+            Log.Info("To many changes. Need to fallback to batch method");
+            foreach (var root in GetChangedRoots(changes)) {
+                if (IsCancel()) {
+                    return true;
+                }
+
+                if (!RunBatchTransfer(root)) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private void TransferAll(EventPool changes, TransferOptions options) {
+            if (TryBatchTransfer(changes)) {
+                return;
+            }
+
+            Exception lostLifeError = null;
             foreach (var change in changes) {
                 if (IsCancel()) {
                     return;
@@ -702,6 +794,7 @@ namespace Core {
                 User = User,
                 PrivateKey = PrivateKey,
                 DestinationPath = DestinationPath,
+                Excludes = Excludes,
             };
 
             monitor.OnChangesCollect += OnChangesProcessed;
@@ -757,6 +850,7 @@ namespace Core {
                 PrivateKey = PrivateKey,
                 DestinationPath = DestinationPath,
                 DryRun = DryRun,
+                Excludes = Excludes,
             };
 
             monitor.TurnOn();
