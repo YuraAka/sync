@@ -343,9 +343,9 @@ namespace Core {
         private Session Session = new Session();
         private ILogger Log;
         private EventPool LostLifeChanges = new EventPool();
-        private string SourcePath { set; get; }
         private string BashSourcePath { set; get; }
         private string BashExePath { set; get; }
+        private string SourcePath { set; get; }
         private Predicate IsCancel;
 
         public string Host { set; get; }
@@ -369,6 +369,14 @@ namespace Core {
 
         public void Stop() {
             Session.Abort();
+        }
+
+        public void Resync(string sourcePath) {
+            SourcePath = sourcePath;
+            BashSourcePath = Utils.ToBashPath(SourcePath);
+            BashExePath = Utils.TryBashExePath();
+
+            RunBatchTransfer(SourcePath);
         }
 
         public void WaitChanges(ChangesMonitor source, Predicate cancelPoller) {
@@ -535,7 +543,8 @@ namespace Core {
 
         private bool TryBatchTransfer(EventPool changes) {
             // TODO: tune threshold for optimal speed
-            if (changes.Count < 100) {
+            if (true || changes.Count < 100) {
+                // TODO: run batch sync on the end: measure speed of changes
                 return false;
             }
 
@@ -816,6 +825,21 @@ namespace Core {
             transmitter.WaitChanges(monitor, cancelPoller);
             OnStop();
             logger.Info("Stopping...");
+        }
+
+        public void Resync() {
+            ILogger logger = new EventLogger();
+            ChangesTransmitter transmitter = new ChangesTransmitter(logger) {
+                Host = Host,
+                User = User,
+                PrivateKey = PrivateKey,
+                DestinationPath = DestinationPath,
+                Excludes = Excludes,
+            };
+
+            transmitter.Resync(SourcePath);
+            OnStop();
+            logger.Info("Resync stopping...");
         }
     }
 

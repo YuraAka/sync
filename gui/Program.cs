@@ -100,6 +100,7 @@ namespace gui {
         private ToolStripItem StartItem;
         private ToolStripItem StopItem;
         private BackgroundWorker SyncWorker;
+        private BackgroundWorker ResyncWorker;
 
         private SettingsForm SettingsForm;
         private SettingsFrontend Settings = new SettingsFrontend();
@@ -137,6 +138,10 @@ namespace gui {
             }
         }
 
+        private void OnResync(object sender, EventArgs e) {
+            ResyncWorker.RunWorkerAsync();
+        }
+
         private void OnStart(object sender, EventArgs e) {
             SyncWorker.RunWorkerAsync();
         }
@@ -154,6 +159,7 @@ namespace gui {
 
             TrayIcon.ContextMenuStrip.Items.Clear();
             TrayIcon.ContextMenuStrip.Items.Add(CreateItem("Settings", OnSettings));
+            TrayIcon.ContextMenuStrip.Items.Add(CreateItem("Resync", OnResync));
             TrayIcon.ContextMenuStrip.Items.Add(StartItem);
             TrayIcon.ContextMenuStrip.Items.Add(StopItem);
             TrayIcon.ContextMenuStrip.Items.Add(new ToolStripSeparator());
@@ -179,6 +185,15 @@ namespace gui {
             SyncWorker.ProgressChanged += UpdateProgress;
             SyncWorker.RunWorkerCompleted += CompleteSync;
             Components.Add(SyncWorker);
+
+            ResyncWorker = new BackgroundWorker() {
+                WorkerReportsProgress = true,
+                WorkerSupportsCancellation = true,
+            };
+
+            ResyncWorker.DoWork += RunResync;
+            ResyncWorker.RunWorkerCompleted += CompleteResync;
+            Components.Add(ResyncWorker);
 
             StartItem = CreateItem("Start", OnStart);
             StopItem = CreateItem("Stop", OnStop, false);
@@ -229,7 +244,23 @@ namespace gui {
 
             syncronizer.Start(() => worker.CancellationPending);
             e.Cancel = true;
-            ChangeIconToStoppedFromThread();
+        }
+
+        private void RunResync(object sender, DoWorkEventArgs e) {
+            var worker = sender as BackgroundWorker;
+            var syncronizer = new Core.InteractiveFileChangesSync() {
+                User = Settings.User,
+                Host = Settings.Host,
+                SourcePath = Settings.SourcePath,
+                DestinationPath = Settings.DestinationPath,
+                PrivateKey = Settings.PrivateKey,
+                Excludes = new HashSet<String>(Settings.Excludes.Cast<String>()),
+            };
+
+            /// todo make separate item for resync, handle menu items better
+            ChangeIconToProcessingFromThread();
+            syncronizer.Resync();
+            e.Cancel = true;
         }
 
         private void UpdateProgress(object sender, ProgressChangedEventArgs e) {
@@ -237,6 +268,11 @@ namespace gui {
         }
 
         private void CompleteSync(object sender, RunWorkerCompletedEventArgs e) {
+            ChangeIconToStoppedFromThread();
+        }
+
+        private void CompleteResync(object sender, RunWorkerCompletedEventArgs e) {
+            ChangeIconToStoppedFromThread();
         }
 
         protected override void Dispose(bool disposing) {
