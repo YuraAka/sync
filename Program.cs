@@ -11,6 +11,7 @@ namespace YSync {
         static string DestinationPath;
         static string Host;
         static string PrivateKey;
+        static string Passphrase;
         static int Verbosity = 0;
         static string Excludes = "";
         static bool DryRun = false;
@@ -26,6 +27,7 @@ namespace YSync {
                 DestinationPath = DestinationPath,
                 Host = Host,
                 PrivateKey = PrivateKey,
+                Passphrase = Passphrase,
                 Verbosity = Verbosity,
                 Excludes = new HashSet<string>(Excludes.Split(',')),
                 DryRun = DryRun
@@ -42,6 +44,7 @@ namespace YSync {
                 { "d|dst=", "destination path in remote host", v => DestinationPath = v },
                 { "x|host=", "remote host", v => Host = v },
                 { "k|key=", "path to private key", v => PrivateKey = v },
+                { "p|passphrase=", "passphrase for key", v => Passphrase = v },
                 { "e|exclude=", "comma-separated exclude name list", v => Excludes = v },
                 { "v", "verbosity level 1", v => Verbosity = 1 },
                 { "V", "verbosity level 2", v => Verbosity = 2 },

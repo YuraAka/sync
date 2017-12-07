@@ -782,6 +782,7 @@ namespace Core {
         public string DestinationPath { get; set; }
         public string Host { get; set; }
         public string PrivateKey { get; set; }
+        public string Passphrase { get; set; }
         public HashSet<string> Excludes { get; set; }
 
         public event Action OnChangesProcessed = new Action(() => { });
@@ -802,6 +803,7 @@ namespace Core {
                 Host = Host,
                 User = User,
                 PrivateKey = PrivateKey,
+                Passphrase = Passphrase,
                 DestinationPath = DestinationPath,
                 Excludes = Excludes,
             };
@@ -833,6 +835,7 @@ namespace Core {
                 Host = Host,
                 User = User,
                 PrivateKey = PrivateKey,
+                Passphrase = Passphrase,
                 DestinationPath = DestinationPath,
                 Excludes = Excludes,
             };
@@ -849,6 +852,7 @@ namespace Core {
         public string DestinationPath { get; set; }
         public string Host { get; set; }
         public string PrivateKey { get; set; }
+        public string Passphrase { get; set; }
         public int Verbosity { get; set; }
         public HashSet<string> Excludes { get; set; }
         public bool DryRun { get; set; }
@@ -872,6 +876,7 @@ namespace Core {
                 Host = Host,
                 User = User,
                 PrivateKey = PrivateKey,
+                Passphrase = Passphrase,
                 DestinationPath = DestinationPath,
                 DryRun = DryRun,
                 Excludes = Excludes,
